@@ -1,0 +1,14 @@
+{
+    "cmake.configureSettings": {
+        // "CMAKE_PREFIX_PATH": "/opt/conda/envs/py38",
+        // "CMAKE_SYSROOT": "/opt/conda/envs/py38/x86_64-conda-linux-gnu/sysroot",
+        // "Python3_EXECUTABLE": "/opt/conda/envs/py38/bin/python",
+        "CMAKE_INSTALL_PREFIX": "install",
+        "MLIR_DIR": "/usr/lib/llvm-16/lib/cmake/mlir",
+        "LLVM_EXTERNAL_LIT": "/opt/conda/envs/py38/bin/lit",
+    },
+    "clangd.path": "/usr/bin/clangd-16",
+    "terminal.integrated.env.linux": {
+        "PATH": "${workspaceFolder}/build/bin:${env:PATH}",
+    },
+}
