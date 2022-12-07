@@ -298,24 +298,24 @@ LogicalResult IsPosInfOp::inferReturnTypes(
         builder, getOperation(), operands, reifiedReturnShapes);           \
   }
 
-BROADCAST_BINARY_OP_DEFS(BroadcastAddOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastAndOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastAtan2Op);
-BROADCAST_BINARY_OP_DEFS(BroadcastDivOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastMaxOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastMinOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastMulOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastNextAfterOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastOrOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastPolygammaOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastPowOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastRemOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastShiftLeftOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastShiftRightArithmeticOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastShiftRightLogicalOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastSubOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastXorOp);
-BROADCAST_BINARY_OP_DEFS(BroadcastZetaOp);
+BROADCAST_BINARY_OP_DEFS(BroadcastAddOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastAndOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastAtan2Op)
+BROADCAST_BINARY_OP_DEFS(BroadcastDivOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastMaxOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastMinOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastMulOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastNextAfterOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastOrOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastPolygammaOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastPowOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastRemOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastShiftLeftOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastShiftRightArithmeticOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastShiftRightLogicalOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastSubOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastXorOp)
+BROADCAST_BINARY_OP_DEFS(BroadcastZetaOp)
 
 #undef BROADCAST_BINARY_OP_DEFS
 
@@ -470,7 +470,7 @@ LogicalResult TopKOp::inferReturnTypeComponents(
     return emitOptionalError(location, "operand's rank must be at least 1");
   }
   auto operandLastDim = operandTy.getShape()[operandTy.getRank() - 1];
-  if (operandLastDim == ShapedType::kDynamicSize) {
+  if (operandLastDim == ShapedType::kDynamic) {
     return emitOptionalError(location,
                              "operand's last dimension must be static");
   }

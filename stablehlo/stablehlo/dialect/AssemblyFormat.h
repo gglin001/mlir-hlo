@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef STABLEHLO_DIALECT_ASSEMBLYFORMAT_H
 #define STABLEHLO_DIALECT_ASSEMBLYFORMAT_H
 
+#include "llvm/ADT/StringRef.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Operation.h"
 
@@ -172,6 +173,20 @@ void printDenseI64Array(OpAsmPrinter& p, Operation* op,
 
 ParseResult parseDenseI64Array(OpAsmParser& parser, DenseIntElementsAttr& attr);
 
+// DimSizes - Print an array of ints. Dynamic dimensions printed as `?`.
+//
+//   Generic:
+//     [1, -1]
+//   Custom:
+//     [1, ?]
+std::string dimSizeToString(int64_t dimSize);
+
+void printDimSizes(AsmPrinter& p, llvm::ArrayRef<int64_t> dimSizes);
+
+FailureOr<SmallVector<int64_t>> parseDimSizes(AsmParser& parser);
+ParseResult parseDimSizes(AsmParser& parser,
+                          FailureOr<SmallVector<int64_t>>& dimSizes);
+
 // ExponentMantissa - Abbreviated printing of exponent and mantissa as e#m#.
 //
 //   Generic:
@@ -183,6 +198,20 @@ void printExponentMantissa(AsmPrinter& p, Operation*, IntegerAttr exponent,
 
 ParseResult parseExponentMantissa(AsmParser& parser, IntegerAttr& exponent,
                                   IntegerAttr& mantissa);
+
+// CustomCallTarget - Print custom call target using upstream SymbolRef
+// printing.
+//
+// Generic:
+//    {custom_call_target = "foo"}
+//    {custom_call_target = "not-valid-id"}
+//
+// Custom:
+//    @foo
+//    @"not-valid-id"
+void printCustomCallTarget(AsmPrinter& p, Operation*, StringAttr target);
+
+ParseResult parseCustomCallTarget(AsmParser& parser, StringAttr& target);
 
 }  // namespace hlo
 }  // namespace mlir

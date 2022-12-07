@@ -20,16 +20,19 @@ limitations under the License.
 include "mlir/IR/OpBase.td"
 include "mlir/IR/TensorEncoding.td"
 
-def StableHLO_Dim : ArrayRefParameter<"int64_t", "Dimension">;
+def StableHLO_Dims : ArrayRefParameter<"int64_t", "Dimension"> {
+  let parser = "parseDimSizes($_parser)";
+  let printer = "printDimSizes($_printer, $_self)";
+}
 
 def StableHLO_ScatterDimensionNumbers : AttrDef<StableHLO_Dialect, "ScatterDimensionNumbers"> {
   let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "scatter";
   let summary = "Attribute that models the dimension information for scatter";
   let parameters = (ins
-      StableHLO_Dim:$updateWindowDims,
-      StableHLO_Dim:$insertedWindowDims,
-      StableHLO_Dim:$scatterDimsToOperandDims,
+      StableHLO_Dims:$updateWindowDims,
+      StableHLO_Dims:$insertedWindowDims,
+      StableHLO_Dims:$scatterDimsToOperandDims,
       "int64_t":$indexVectorDim
   );
   let hasCustomAssemblyFormat = 1;
@@ -40,9 +43,9 @@ def StableHLO_GatherDimensionNumbers : AttrDef<StableHLO_Dialect, "GatherDimensi
   let mnemonic = "gather";
   let summary = "Attribute that models the dimension information for gather";
   let parameters = (ins
-      StableHLO_Dim:$offsetDims,
-      StableHLO_Dim:$collapsedSliceDims,
-      StableHLO_Dim:$startIndexMap,
+      StableHLO_Dims:$offsetDims,
+      StableHLO_Dims:$collapsedSliceDims,
+      StableHLO_Dims:$startIndexMap,
       "int64_t":$indexVectorDim
   );
   let hasCustomAssemblyFormat = 1;
@@ -53,30 +56,56 @@ def StableHLO_DotDimensionNumbers : AttrDef<StableHLO_Dialect, "DotDimensionNumb
   let mnemonic = "dot";
   let summary = "Attribute that models the dimension information for dot.";
   let parameters = (ins
-      StableHLO_Dim:$lhsBatchingDimensions,
-      StableHLO_Dim:$rhsBatchingDimensions,
-      StableHLO_Dim:$lhsContractingDimensions,
-      StableHLO_Dim:$rhsContractingDimensions
+      StableHLO_Dims:$lhsBatchingDimensions,
+      StableHLO_Dims:$rhsBatchingDimensions,
+      StableHLO_Dims:$lhsContractingDimensions,
+      StableHLO_Dims:$rhsContractingDimensions
   );
   let hasCustomAssemblyFormat = 1;
 }
 
-def StableHLO_ConvDimensionNumbers : AttrDef<StableHLO_Dialect, "ConvDimensionNumbers"> {
+def OutputOperandAlias : AttrDef<StableHLO_Dialect, "OutputOperandAlias"> {
   let cppNamespace = "::mlir::stablehlo";
-  let mnemonic = "conv";
-  let summary = "Structure of dimension information for conv op";
+  let mnemonic = "output_operand_alias";
+  let summary =
+    "Attribute that models the alias relationship of output and operand of a CustomCall op";
+  let description = [{
+    This attribute captures the alias relationship of the output to one of the
+    operands for a CustomCall op, denoted by `operand_index`. The
+    `output_tuple_indices` and `operand_tuple_indices` are used to index into
+    output and operand types. These indices lists are empty if the corresponding
+    types are not tuple types, and can be arbitrarily long in case of
+    arbitrarily nested tuple types.
+
+    See https://www.tensorflow.org/xla/aliasing.
+
+    Example when used as array with in stablehlo.custom-call:
+
+    ```mlir
+    %0 = "stablehlo.custom_call"(%arg0, %arg1) {
+      // other attributes
+      output_operand_alias = [
+        #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                   operand_index = 0,
+                                   operand_tuple_indices = [1]>
+      ]
+    } : (tuple<tensor<1x1xf32>, tensor<2x3xf32>>, tensor<5x5xf32>) -> tuple<tensor<2x3xf32>>
+
+    The output and the 0th operand are both tuples. The aliasing shows the
+    relationship between the 0th element in output tuple with the 1st element in
+    the 0th operand. And both of them are of the same type: tensor<2x3xf32>.
+    ```
+  }];
   let parameters = (ins
-    "int64_t":$inputBatchDimension,
-    "int64_t":$inputFeatureDimension,
-    StableHLO_Dim:$inputSpatialDimensions,
-    "int64_t":$kernelInputFeatureDimension,
-    "int64_t":$kernelOutputFeatureDimension,
-    StableHLO_Dim:$kernelSpatialDimensions,
-    "int64_t":$outputBatchDimension,
-    "int64_t":$outputFeatureDimension,
-    StableHLO_Dim:$outputSpatialDimensions
+    StableHLO_Dims:$outputTupleIndices,
+    "int64_t":$operandIndex,
+    StableHLO_Dims:$operandTupleIndices
   );
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = [{
+    `<` `output_tuple_indices` `=` $outputTupleIndices `,`
+        `operand_index` `=` $operandIndex `,`
+        `operand_tuple_indices` `=` $operandTupleIndices `>`
+  }];
 }
 
 def StableHLO_ArgResultAlias : AttrDef<StableHLO_Dialect, "ArgResultAlias"> {
@@ -104,9 +133,9 @@ def StableHLO_ArgResultAlias : AttrDef<StableHLO_Dialect, "ArgResultAlias"> {
     ```
   }];
   let parameters = (ins
-    StableHLO_Dim:$argTupleIndices,
+    StableHLO_Dims:$argTupleIndices,
     "int64_t":$resultIndex,
-    StableHLO_Dim:$resultTupleIndices,
+    StableHLO_Dims:$resultTupleIndices,
     "bool":$isMustAlias
   );
   let hasCustomAssemblyFormat = 1;
@@ -146,7 +175,7 @@ def StableHLO_TypeExtensions : AttrDef<StableHLO_Dialect, "TypeExtensions", [
 
     See `HLO_BoundedAttrInterface` for documentation for `bounds`.
   }];
-  let assemblyFormat = "`<` `bounds` `=` `[` $bounds `]` `>`";
+  let assemblyFormat = "`<` `bounds` `=` ` ` custom<DimSizes>($bounds) `>`";
 }
 
 // A layout attribute (1D tensor of index type)
@@ -180,6 +209,26 @@ def StableHLO_BoolElementsAttr :
   let returnType = [{ ::mlir::DenseElementsAttr }];
 
   let convertFromStorage = "$_self";
+}
+
+def StableHLO_ConvDimensionNumbers : AttrDef<StableHLO_Dialect, "ConvDimensionNumbers"> {
+  let cppNamespace = "::mlir::stablehlo";
+  let mnemonic = "conv";
+  let summary = "Structure of dimension information for conv op";
+  let parameters = (ins
+    "int64_t":$inputBatchDimension,
+    "int64_t":$inputFeatureDimension,
+    StableHLO_Dims:$inputSpatialDimensions,
+
+    "int64_t":$kernelInputFeatureDimension,
+    "int64_t":$kernelOutputFeatureDimension,
+    StableHLO_Dims:$kernelSpatialDimensions,
+
+    "int64_t":$outputBatchDimension,
+    "int64_t":$outputFeatureDimension,
+    StableHLO_Dims:$outputSpatialDimensions
+  );
+  let hasCustomAssemblyFormat = 1;
 }
 
 def StableHLO_ConvolutionAttributes {

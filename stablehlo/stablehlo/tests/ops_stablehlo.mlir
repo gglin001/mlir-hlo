@@ -133,7 +133,7 @@ func.func @invalid_reduce_scatter(%data: tensor<4x16xf32>) -> tensor<3x4xf32> {
 // -----
 
 func.func @reduce_scatter(%data: tensor<4x16xf32>) -> tensor<4x4xf32> {
-  // expected-error@+1 {{replica groups should be a rank 2 tensor of 64 bit integers}}
+  // expected-error@+1 {{replica groups should be a rank 2 tensor}}
   %0 = "stablehlo.reduce_scatter"(%data) ({
     ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
     %1 = stablehlo.add %arg2, %arg3 : tensor<f32>
@@ -237,7 +237,7 @@ func.func @alltoall_unranked_input(%data: tensor<*xf32>) -> tensor<*xf32> {
 // -----
 
 func.func @alltoall_negative_split_dimension(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
-  // expected-error@+1 {{AllToAll split_dimension -1 is out-of-bounds for input rank 2}}
+  // expected-error@+1 {{AllToAll split_dimension cannot be negative}}
   %0 = "stablehlo.all_to_all"(%data) {
     split_dimension = -1 : i64,
     concat_dimension = 0 : i64,
@@ -263,7 +263,7 @@ func.func @alltoall_out_bound_split_dimension(%data: tensor<4x16xf32>) -> tensor
 // -----
 
 func.func @alltoall_negative_concat_dimension(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
-  // expected-error@+1 {{AllToAll concat_dimension -1 is out-of-bounds for input rank 2}}
+  // expected-error@+1 {{AllToAll concat_dimension cannot be negative}}
   %0 = "stablehlo.all_to_all"(%data) {
     split_dimension = 1 : i64,
     concat_dimension = -1 : i64,
@@ -288,6 +288,19 @@ func.func @alltoall_out_bound_concat_dimension(%data: tensor<4x16xf32>) -> tenso
 
 // -----
 
+func.func @alltoall_invalid_split_count(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
+  // expected-error@+1 {{AllToAll split_count must be > 0}}
+  %0 = "stablehlo.all_to_all"(%data) {
+    split_dimension = 1 : i64,
+    concat_dimension = 0 : i64,
+    split_count = 0 : i64,
+    replica_groups = dense<[[0, 1, 2, 3]]> : tensor<1x4xi64>
+  } : (tensor<4x16xf32>) -> tensor<16x4xf32>
+  func.return %0 : tensor<16x4xf32>
+}
+
+// -----
+
 func.func @alltoall_invalid_split_dim_size(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
 // expected-error@+1 {{split dimension has size 16, expected to be a multiple of split_count 5}}
   %0 = "stablehlo.all_to_all"(%data) {
@@ -295,6 +308,71 @@ func.func @alltoall_invalid_split_dim_size(%data: tensor<4x16xf32>) -> tensor<16
     concat_dimension = 0 : i64,
     split_count = 5 : i64,
     replica_groups = dense<[[0, 1, 2, 3, 4]]> : tensor<1x5xi64>
+  } : (tensor<4x16xf32>) -> tensor<16x4xf32>
+  func.return %0 : tensor<16x4xf32>
+}
+
+// -----
+
+func.func @alltoall_invalid_replica_group(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
+  // expected-error@+1 {{replica groups should be a rank 2 tensor}}
+  %0 = "stablehlo.all_to_all"(%data) {
+    split_dimension = 1 : i64,
+    concat_dimension = 0 : i64,
+    split_count = 4 : i64,
+    replica_groups = dense<[[[0], [1], [2], [3]]]> : tensor<1x4x1xi64>
+  } : (tensor<4x16xf32>) -> tensor<16x4xf32>
+  func.return %0 : tensor<16x4xf32>
+}
+
+// -----
+
+func.func @alltoall_invalid_replica_group(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
+  // expected-error@+1 {{replica id #1 not seen in replica groups}}
+  %0 = "stablehlo.all_to_all"(%data) {
+    split_dimension = 1 : i64,
+    concat_dimension = 0 : i64,
+    split_count = 4 : i64,
+    replica_groups = dense<[[-5, -4, -3, 0]]> : tensor<1x4xi64>
+  } : (tensor<4x16xf32>) -> tensor<16x4xf32>
+  func.return %0 : tensor<16x4xf32>
+}
+
+// -----
+
+func.func @alltoall_invalid_replica_group(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
+  // expected-error@+1 {{replica id #2 seen more than once}}
+  %0 = "stablehlo.all_to_all"(%data) {
+    split_dimension = 1 : i64,
+    concat_dimension = 0 : i64,
+    split_count = 4 : i64,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 2]]> : tensor<2x4xi64>
+  } : (tensor<4x16xf32>) -> tensor<16x4xf32>
+  func.return %0 : tensor<16x4xf32>
+}
+
+// -----
+
+func.func @alltoall_invalid_replica_group(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
+  // expected-error@+1 {{replica id #4 not seen in replica groups}}
+  %0 = "stablehlo.all_to_all"(%data) {
+    split_dimension = 1 : i64,
+    concat_dimension = 0 : i64,
+    split_count = 4 : i64,
+    replica_groups = dense<[[0, 2, 6, 8], [1, 3, 5, 7]]> : tensor<2x4xi64>
+  } : (tensor<4x16xf32>) -> tensor<16x4xf32>
+  func.return %0 : tensor<16x4xf32>
+}
+
+// -----
+
+func.func @alltoall_invalid_replica_group(%data: tensor<4x16xf32>) -> tensor<16x4xf32> {
+  // expected-error@+1 {{group size of replica_groups must be 4}}
+  %0 = "stablehlo.all_to_all"(%data) {
+    split_dimension = 1 : i64,
+    concat_dimension = 0 : i64,
+    split_count = 4 : i64,
+    replica_groups = dense<[[0, 2, 4], [1, 3, 5]]> : tensor<2x3xi64>
   } : (tensor<4x16xf32>) -> tensor<16x4xf32>
   func.return %0 : tensor<16x4xf32>
 }
@@ -313,13 +391,13 @@ func.func @allgather_incompatible_types(%arg0: tensor<128x32xf32>) -> tensor<128
 
 // -----
 
-func.func @allgather_gather_along_zero_dimension(%arg0: tensor<128x0x32xf32>) -> tensor<128x100xf32> {
-  // expected-error@+1 {{operand gather dimension cannot be zero}}
+func.func @allgather_gather_along_zero_dimension(%arg0: tensor<128x0xf32>) -> tensor<128x100xf32> {
+  // expected-error@+1 {{dimension size of operand at 'all_gather_dim' cannot be zero}}
   %0 = "stablehlo.all_gather"(%arg0) {
     all_gather_dim = 1 : i64,
     channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
     replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 7]]> : tensor<2x4xi64>
-  } : (tensor<128x0x32xf32>) -> tensor<128x100xf32>
+  } : (tensor<128x0xf32>) -> tensor<128x100xf32>
   func.return %0 : tensor<128x100xf32>
 }
 
@@ -334,6 +412,128 @@ func.func @allgather_dynamic_gather_dim(%arg0: tensor<128x32xf32>) -> tensor<128
     use_global_device_ids
   } : (tensor<128x32xf32>) -> tensor<128x?xf32>
   func.return %0 : tensor<128x?xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @allgather_dynamic_non_gather_dim
+func.func @allgather_dynamic_non_gather_dim(%arg0: tensor<128x32xf32>) -> tensor<?x64xf32> {
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 7]]> : tensor<2x4xi64>,
+    use_global_device_ids
+  } : (tensor<128x32xf32>) -> tensor<?x64xf32>
+  func.return %0 : tensor<?x64xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_dim(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{all_gather_dim must be a valid index of operand}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 2 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 7]]> : tensor<2x4xi64>
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_dim(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{all_gather_dim cannot be negative}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = -1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 7]]> : tensor<2x4xi64>
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_result_shape(%arg0: tensor<8x2x32xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{operand and return must have the same rank}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 7]]> : tensor<2x4xi64>
+  } : (tensor<8x2x32xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_result_shape(%arg0: tensor<8x2xf32>) -> tensor<4x8xf32> {
+  // expected-error@+1 {{operand and result should have the same shape except for the dimension size at 'all_gather_dim'}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 7]]> : tensor<2x4xi64>
+  } : (tensor<8x2xf32>) -> tensor<4x8xf32>
+  func.return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_replica_group_shape(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{replica groups should be a rank 2 tensor}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[[0], [1], [2], [3]]]> : tensor<1x4x1xi64>
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_replica_group_shape(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{replica groups cannot be empty}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<0> : tensor<0x2xi64>,
+    use_global_device_ids
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_replica_group(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{replica id #1 not seen in replica groups}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[-5, -4, -3, 0]]> : tensor<1x4xi64>
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_replica_group(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{replica id #2 seen more than once}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 4, 6], [1, 3, 5, 2]]> : tensor<2x4xi64>
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
+}
+
+// -----
+
+func.func @all_gather_invalid_replica_group(%arg0: tensor<8x2xf32>) -> tensor<8x8xf32> {
+  // expected-error@+1 {{replica id #4 not seen in replica groups}}
+  %0 = "stablehlo.all_gather"(%arg0) {
+    all_gather_dim = 1 : i64,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 0>,
+    replica_groups = dense<[[0, 2, 6, 8], [1, 3, 5, 7]]> : tensor<2x4xi64>
+  } : (tensor<8x2xf32>) -> tensor<8x8xf32>
+  func.return %0 : tensor<8x8xf32>
 }
 
 // -----
@@ -3726,218 +3926,80 @@ func.func @custom_call_mismatch_tensor_and_layout_permutation(%arg: tensor<1x2x3
 }
 
 // -----
-// CHECK: func @conv2d_generic
-// CHECK: stablehlo.convolution
-// CHECK-SAME: dim_numbers = [b, 0, 1, ?, f]x[0, 1, ?, i, o]->[?, b, 0, 1, f]
-// CHECK-SAME{LITERAL}: window = {stride = [1, 1], pad = [[1, 1], [1, 1]], lhs_dilate = [1, 1], rhs_dilate = [1, 1]}
-func.func @conv2d_generic(%arg0: tensor<1x8x8x32x207xf32>, %arg1: tensor<3x3x32x207x16xf32>) -> tensor<32x1x8x8x16xf32> {
-  %0 = "stablehlo.convolution"(%arg0, %arg1) {batch_group_count = 1 : i64,
-    dimension_numbers = #stablehlo.conv<raw
-      input_batch_dimension = 0,
-      input_feature_dimension = 4,
-      input_spatial_dimensions = [1, 2],
-      kernel_input_feature_dimension = 3,
-      kernel_output_feature_dimension = 4,
-      kernel_spatial_dimensions = [0, 1],
-      output_batch_dimension = 1,
-      output_feature_dimension = 4,
-      output_spatial_dimensions = [2, 3]
-    >, feature_group_count = 1 : i64, lhs_dilation = dense<1> : tensor<2xi64>, padding = dense<1> : tensor<2x2xi64>, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>], rhs_dilation = dense<1> : tensor<2xi64>, window_strides = dense<1> : tensor<2xi64>} :
-       (tensor<1x8x8x32x207xf32>, tensor<3x3x32x207x16xf32>) -> tensor<32x1x8x8x16xf32>
-  func.return %0 : tensor<32x1x8x8x16xf32>
-}
 
-// CHECK: func @conv2d
-// CHECK: stablehlo.convolution
-// CHECK-SAME: dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f]
-// CHECK-SAME{LITERAL}: window = {stride = [1, 1], pad = [[1, 1], [1, 1]], lhs_dilate = [1, 1], rhs_dilate = [1, 1]}
-func.func @conv2d(%arg0: tensor<1x8x8x207xf32>, %arg1: tensor<3x3x207x16xf32>) -> tensor<1x8x8x16xf32> {
-  %0 = stablehlo.convolution(%arg0, %arg1)
-         dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],
-         window = {stride = [1, 1], pad = [[1, 1], [1, 1]], lhs_dilate = [1, 1], rhs_dilate = [1, 1]}
-         {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} :
-       (tensor<1x8x8x207xf32>, tensor<3x3x207x16xf32>) -> tensor<1x8x8x16xf32>
-  func.return %0 : tensor<1x8x8x16xf32>
-}
-
-// CHECK: func @conv_empty_spatial_dimensions
-// CHECK: stablehlo.convolution
-// CHECK-SAME: dim_numbers = [b, f]x[i, o]->[b, f]
-// CHECK-SAME{LITERAL}: window = {stride = [], pad = [], lhs_dilate = [], rhs_dilate = [], reverse = []}
-func.func @conv_empty_spatial_dimensions(%arg0: tensor<3x2xf16>, %arg1: tensor<2x2xf16>) -> tuple<tensor<3x2xf16>> {
-  %0 = stablehlo.convolution(%arg0, %arg1)
-         dim_numbers = [b, f]x[i, o]->[b, f],
-         window = {stride = [], pad = [], lhs_dilate = [], rhs_dilate = [], reverse = []}
-         {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]}
-       : (tensor<3x2xf16>, tensor<2x2xf16>) -> tensor<3x2xf16>
-  %1 = "stablehlo.tuple"(%0) : (tensor<3x2xf16>) -> tuple<tensor<3x2xf16>>
-  func.return %1 : tuple<tensor<3x2xf16>>
-}
-// -----
-
-func.func @conv2d(%arg0: tensor<1x8x8x207xf32>, %arg1: tensor<3x3x207x16xf32>) -> tensor<1x8x8x16xf32> {
-  // expected-error @+3 {{'stablehlo.convolution' Expected array with 2 elements, got 3 elements instead}}
-  %0 = stablehlo.convolution(%arg0, %arg1)
-         dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],
-         window = {stride = [1, 1], pad = [[1, 1, 1], [1, 1, 1]], lhs_dilate = [1, 1], rhs_dilate = [1, 1]}
-         {batch_group_count = 1 : i64, feature_group_count = 1 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} :
-       (tensor<1x8x8x207xf32>, tensor<3x3x207x16xf32>) -> tensor<1x8x8x16xf32>
-  func.return %0 : tensor<1x8x8x16xf32>
+// CHECK-LABEL: func @custom_call_output_operand_alias
+func.func @custom_call_output_operand_alias(%arg0: tuple<tensor<1x1xf32>, tensor<2x3xf32>>, %arg1: tensor<5x5xf32>) {
+  // CHECK: stablehlo.custom_call @foo(%arg0, %arg1)
+  // CHECK-SAME{LITERAL}: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = [1]>]}
+  %0 = "stablehlo.custom_call"(%arg0, %arg1) {
+    call_target_name = "foo",
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                 operand_index = 0,
+                                 operand_tuple_indices = [1]>
+    ]
+  } : (tuple<tensor<1x1xf32>, tensor<2x3xf32>>, tensor<5x5xf32>) -> tuple<tensor<2x3xf32>>
+  func.return
 }
 
 // -----
 
-// CHECK: module
-// CHECK-SAME: stablehlo.conv = #stablehlo.conv<[b, 0, 1, f]x[0, 1, i, o]->[b, 1, 0, f]>
-module attributes { stablehlo.conv = #stablehlo.conv<raw
-      input_batch_dimension = 0,
-      input_feature_dimension = 3,
-      input_spatial_dimensions = [1, 2],
-      kernel_input_feature_dimension = 2,
-      kernel_output_feature_dimension = 3,
-      kernel_spatial_dimensions = [0, 1],
-      output_batch_dimension = 0,
-      output_feature_dimension = 3,
-      output_spatial_dimensions = [2, 1]>} {}
-
-// -----
-
-// CHECK-LABEL: func @convolution
-// CHECK: stablehlo.convolution
-// CHECK-SAME: dim_numbers = [b, 1, 0, f]x[0, 1, i, o]->[b, 0, 1, f]
-// CHECK-SAME{LITERAL}: window = {stride = [2, 1], pad = [[0, 1], [0, 1]], rhs_dilate = [1, 2]}
-func.func @convolution(%arg0: tensor<2x2x3x4xf32>, %arg1: tensor<3x2x4x3xf32>) -> tensor<2x1x1x3xf32> {
-  %0 = stablehlo.convolution(%arg0, %arg1)
-     dim_numbers = [b, 1, 0, f]x[0, 1, i, o]->[b, 0, 1, f],
-     window = {stride = [2, 1], pad = [[0, 1], [0, 1]], rhs_dilate = [1, 2]}
-     { batch_group_count = 1 : i64, feature_group_count = 1 : i64}
-  : (tensor<2x2x3x4xf32>, tensor<3x2x4x3xf32>) -> tensor<2x1x1x3xf32>
-  func.return %0 : tensor<2x1x1x3xf32>
+func.func @custom_call_output_operand_alias_mismatch_operand_index(%arg0: tuple<tensor<1x1xf32>, tensor<2x3xf32>>, %arg1: tensor<5x5xf32>) {
+  // expected-error@+1 {{expects operandIndex in the output_operand_alias attribute to be in range [0, 2); got: 2}}
+  %0 = "stablehlo.custom_call"(%arg0, %arg1) {
+    call_target_name = "foo",
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                 operand_index = 2,
+                                 operand_tuple_indices = [1]>
+    ]
+  } : (tuple<tensor<1x1xf32>, tensor<2x3xf32>>, tensor<5x5xf32>) -> tuple<tensor<2x3xf32>>
+  func.return
 }
 
 // -----
 
-// CHECK: module
-// CHECK: stablehlo.conv = #stablehlo.conv<[b, 1, 0, f]x[0, 1, i, o]->[b, 0, 1, f]>
-module attributes {
-  stablehlo.conv = #stablehlo.conv<[b, 1, 0, f]x[0, 1, i, o]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-// CHECK: module
-// CHECK: stablehlo.conv = #stablehlo.conv<[b, 1, 0, ?, f]x[?, 0, 1, i, o]->[b, ?, 0, 1, f]>
-module attributes {
-  stablehlo.conv = #stablehlo.conv<[b, 1, 0, ?, f]x[?, 0, 1, i, o]->[b, ?, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Unexpected dimension c, expecting b, f}}
-  stablehlo.conv = #stablehlo.conv<[c, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Unexpected dimension b, expecting i, o}}
-  stablehlo.conv = #stablehlo.conv<[b, 0, 1, f]x[0, 1, b, o]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Unexpected dimension i, expecting o}}
-  stablehlo.conv = #stablehlo.conv<[b, 0, 1, f]x[0, 1, i, i]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Expected dimensions f not specified}}
-  stablehlo.conv = #stablehlo.conv<[b, 0, 1]x[0, 1, i, o]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Unexpected keyword b}}
-  stablehlo.conv = #stablehlo.conv<[b, 0, 1, f]x[0, 1, i, o, b]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{expected '['}}
-  stablehlo.conv = #stablehlo.conv<{b, 0, 1, f}x[0, 1, i, o]->[b, 0, 1, f]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Expected spatial dimensions 0 not specified}}
-  stablehlo.conv = #stablehlo.conv<[b, f, 1]x[o, 0, 1, i]->[f, b, 0, 1]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Duplicate entries for spatial dimension 1}}
-  stablehlo.conv = #stablehlo.conv<[b, f, 1, 0, 1]x[o, 0, 1, i]->[f, b, 0, 1]>
-} {}
-
-// -----
-
-module attributes {
-  // expected-error@+1{{Unexpected dimension -2}}
-  stablehlo.conv = #stablehlo.conv<[b, f, 1, -2]x[o, 0, 1, i]->[f, b, 0, 1]>
-} {}
-
-// -----
-
-func.func @convolution(%arg0: tensor<2x2x3x4xf32>, %arg1: tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32> {
-  // expected-error@+3{{Expected array with 2 elements, got 3 elements instead}}
-  %0 = stablehlo.convolution(%arg0, %arg1)
-     dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],
-     window = {stride = [2, 1], pad = [[0, 1, 2], [0, 1]], rhs_dilate = [1, 2]}
-     { batch_group_count = 1 : i64, feature_group_count = 1 : i64}
-  : (tensor<2x2x3x4xf32>, tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32>
-  func.return %0 : tensor<3x5x5x4xf32>
+func.func @custom_call_invalid_output_tuple_indices(%arg0: tuple<tensor<1x1xf32>, tensor<2x3xf32>>, %arg1: tensor<5x5xf32>) {
+  // expected-error@+1 {{output_tuple_indices in the output_operand_alias attribute out of bounds}}
+  %0 = "stablehlo.custom_call"(%arg0, %arg1) {
+    call_target_name = "foo",
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [1],
+                                 operand_index = 0,
+                                 operand_tuple_indices = [1]>
+    ]
+  } : (tuple<tensor<1x1xf32>, tensor<2x3xf32>>, tensor<5x5xf32>) -> tuple<tensor<2x3xf32>>
+  func.return
 }
 
 // -----
 
-func.func @convolution(%arg0: tensor<2x2x3x4xf32>, %arg1: tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32> {
-  // expected-error@+3{{Unexpected keyword stide}}
-  %0 = stablehlo.convolution(%arg0, %arg1)
-     dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],
-     window = {stide = [2, 1], pad = [[0, 1], [0, 1]], rhs_dilate = [1, 2]}
-     { batch_group_count = 1 : i64, feature_group_count = 1 : i64}
-  : (tensor<2x2x3x4xf32>, tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32>
-  func.return %0 : tensor<3x5x5x4xf32>
+func.func @custom_call_invalid_operand_tuple_indices(%arg0: tuple<tensor<1x1xf32>, tensor<2x3xf32>>, %arg1: tensor<5x5xf32>) {
+  // expected-error@+1 {{operand_tuple_indices in the output_operand_alias attribute out of bounds}}
+  %0 = "stablehlo.custom_call"(%arg0, %arg1) {
+    call_target_name = "foo",
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                 operand_index = 0,
+                                 operand_tuple_indices = [2]>
+    ]
+  } : (tuple<tensor<1x1xf32>, tensor<2x3xf32>>, tensor<5x5xf32>) -> tuple<tensor<2x3xf32>>
+  func.return
 }
+
 // -----
 
-func.func @convolution(%arg0: tensor<2x2x3x4xf32>, %arg1: tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32> {
-  // expected-error@+3{{expected integer value}}
-  %0 = stablehlo.convolution(%arg0, %arg1)
-     dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],
-     window = {stride = [2, b], pad = [[0, 1], [0, 1]], rhs_dilate = [1, 2]}
-     { batch_group_count = 1 : i64, feature_group_count = 1 : i64}
-  : (tensor<2x2x3x4xf32>, tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32>
-  func.return %0 : tensor<3x5x5x4xf32>
-}
-// -----
-
-func.func @convolution(%arg0: tensor<2x2x3x4xf32>, %arg1: tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32> {
-  // expected-error@+3{{Unexpected keyword stride}}
-  %0 = stablehlo.convolution(%arg0, %arg1)
-     dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f],
-     window = {stride = [2, 1], pad = [[0, 1], [0, 1]], rhs_dilate = [1, 2], stride=[2,1]}
-     { batch_group_count = 1 : i64, feature_group_count = 1 : i64}
-  : (tensor<2x2x3x4xf32>, tensor<3x5x5x3xf32>) -> tensor<3x5x5x4xf32>
-  func.return %0 : tensor<3x5x5x4xf32>
+func.func @custom_call_output_operand_alias(%arg0: tuple<tensor<1x1xf32>, tensor<2x3xf32>>, %arg1: tensor<5x5xf32>) {
+  // expected-error@+1 {{shapes mismatch in the output_operand_alias attribute: operand part has type 'tensor<2x3xf32>' and output part has type 'tensor<20x30xf32>'}}
+  %0 = "stablehlo.custom_call"(%arg0, %arg1) {
+    call_target_name = "foo",
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                 operand_index = 0,
+                                 operand_tuple_indices = [1]>
+    ]
+  } : (tuple<tensor<1x1xf32>, tensor<2x3xf32>>, tensor<5x5xf32>) -> tuple<tensor<20x30xf32>>
+  func.return
 }
 
 // -----
@@ -4404,7 +4466,7 @@ func.func @error_batch_norm_grad(%input: tensor<*xf32>, %scale: tensor<2xf32>, %
 // -----
 
 func.func @error_batch_norm_grad(%input: tensor<?x2x2x2xf32>, %scale: tensor<2xf32>, %mean: tensor<2xf32>, %variance: tensor<2xf32>, %grad_output: tensor<?x2x2x2xf32>) -> tensor<?x2x2x2xf32> {
-  // expected-error@+1 {{expects the size of scale factor to be same as the feature count, but the size of scale factor is 2 and the feature count is -1.}}
+  // expected-error@+1 {{expects the size of scale factor to be same as the feature count, but the size of scale factor is 2 and the feature count is ?.}}
   %0:3 = "stablehlo.batch_norm_grad" (%input, %scale, %mean, %variance, %grad_output) {epsilon = 0.001 : f32, feature_index = 0 : i64} : (tensor<?x2x2x2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<?x2x2x2xf32>) -> (tensor<?x2x2x2xf32>, tensor<2xf32>, tensor<2xf32>)
   func.return %0#0 : tensor<?x2x2x2xf32>
 }

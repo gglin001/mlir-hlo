@@ -33,6 +33,7 @@ limitations under the License.
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -53,6 +54,7 @@ limitations under the License.
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "stablehlo/dialect/AssemblyFormat.h"
 #include "stablehlo/dialect/Base.h"
 
 namespace mlir {
@@ -196,7 +198,8 @@ LogicalResult verifyBatchNorm(Optional<Location> location, Value operand,
         location,
         "expects the size of scale factor to be same as the "
         "feature count, but the size of scale factor is ",
-        scaleShape, " and the feature count is ", featureCount, ".");
+        dimSizeToString(scaleShape), " and the feature count is ",
+        dimSizeToString(featureCount), ".");
 
   return success();
 }
@@ -279,7 +282,7 @@ SmallVector<int64_t> inferWindowOutputShape(
   SmallVector<int64_t> outputDimensions(window.size());
   for (int64_t i = 0; i < static_cast<int64_t>(window.size()); ++i) {
     if (isDynamicDimSize(baseShape[i]) || isDynamicDimSize(window[i].size)) {
-      outputDimensions[i] = ShapedType::kDynamicSize;
+      outputDimensions[i] = ShapedType::kDynamic;
     } else {
       const auto& dim = window[i];
 
@@ -300,6 +303,55 @@ unsigned potentiallyComplexBitwidth(Type type) {
   auto complexTy = type.dyn_cast<ComplexType>();
   return complexTy ? 2 * complexTy.getElementType().getIntOrFloatBitWidth()
                    : type.getIntOrFloatBitWidth();
+}
+
+LogicalResult verifyReplicaGroups(Optional<Location> location,
+                                  DenseIntElementsAttr replicaGroups,
+                                  bool allGroupsMustHaveSameSize,
+                                  Optional<size_t> expectedGroupSize) {
+  auto replicaGroupType = replicaGroups.getType().cast<RankedTensorType>();
+
+  if (replicaGroupType.getRank() != 2)
+    return emitOptionalError(location,
+                             "replica groups should be a rank 2 tensor");
+
+  // Revisit the following check in light of #498.
+  if (replicaGroupType.getShape()[0] * replicaGroupType.getShape()[1] == 0) {
+    return emitOptionalError(location, "replica groups cannot be empty");
+  }
+
+  auto replicaIds = replicaGroups.getValues<int64_t>();
+  llvm::SmallSet<int64_t, 8> replicaIdsSeen;
+  for (int64_t replicaId : replicaIds) {
+    // Replica groups are stored in a 2D tensor. If the op supports non-uniform
+    // groups, null replica IDs are stored as -1.
+    if (replicaId == -1) {
+      if (allGroupsMustHaveSameSize) {
+        return emitOptionalError(location, "Invalid replica id -1");
+      }
+      continue;
+    }
+
+    if (!replicaIdsSeen.insert(replicaId).second) {
+      return emitOptionalError(location, "replica id #", replicaId,
+                               " seen more than once");
+    }
+  }
+
+  for (size_t id = 0; id < replicaIdsSeen.size(); id++) {
+    if (!replicaIdsSeen.contains(id)) {
+      return emitOptionalError(location, "replica id #", id,
+                               " not seen in replica groups");
+    }
+  }
+
+  if (allGroupsMustHaveSameSize && expectedGroupSize &&
+      (replicaIds.size() / replicaGroupType.getShape()[0] !=
+       *expectedGroupSize))
+    return emitOptionalError(location, "group size of replica_groups must be ",
+                             *expectedGroupSize);
+
+  return success();
 }
 
 LogicalResult verifyReducerShape(
@@ -431,7 +483,7 @@ LogicalResult verifyReducerShape(
          argShapeIdx < static_cast<int64_t>(argShape.size());
          outputShapeIdx++)
       if (allowedDimensions[outputShapeIdx] == argShape[argShapeIdx] ||
-          argShape[argShapeIdx] == ShapedType::kDynamicSize)
+          argShape[argShapeIdx] == ShapedType::kDynamic)
         argShapeIdx++;
 
     if (argShapeIdx != static_cast<int64_t>(argShape.size()))
@@ -557,8 +609,8 @@ LogicalResult inferConcatenateOp(Optional<Location> location, ValueRange inputs,
     auto firstShape = firstRankedType.getShape();
     auto secondShape = secondType.getShape();
     for (int d = 0; d < firstRankedType.getRank(); ++d) {
-      if (!ShapedType::isDynamic(firstShape[d]) &&
-          !ShapedType::isDynamic(secondShape[d]) &&
+      if (!isDynamicDimSize(firstShape[d]) &&
+          !isDynamicDimSize(secondShape[d]) &&
           firstShape[d] != secondShape[d] && d != dimension) {
         return emitOptionalError(
             location, "shapes of operand (", firstRankedIndex, ") and (", i,
@@ -579,8 +631,8 @@ LogicalResult inferConcatenateOp(Optional<Location> location, ValueRange inputs,
 
   // Infer the most specific (size, bound) of all dimensions of the return type
   auto rank = firstRankedType.getRank();
-  SmallVector<int64_t> inferredSizes(rank, ShapedType::kDynamicSize);
-  SmallVector<int64_t> inferredBounds(rank, ShapedType::kDynamicSize);
+  SmallVector<int64_t> inferredSizes(rank, ShapedType::kDynamic);
+  SmallVector<int64_t> inferredBounds(rank, ShapedType::kDynamic);
   // Note: for the concatenate dimension, 0 should be the identity element:
   // Any dim size can keep unchanged when concatenated with 0
   inferredSizes[dimension] = 0;
@@ -602,10 +654,9 @@ LogicalResult inferConcatenateOp(Optional<Location> location, ValueRange inputs,
 
       int64_t leftSize = inferredSizes[dim];
       int64_t rightSize =
-          rankedType ? rankedType.getShape()[dim] : ShapedType::kDynamicSize;
+          rankedType ? rankedType.getShape()[dim] : ShapedType::kDynamic;
       int64_t leftBound = inferredBounds[dim];
-      int64_t rightBound =
-          bounds.empty() ? ShapedType::kDynamicSize : bounds[dim];
+      int64_t rightBound = bounds.empty() ? ShapedType::kDynamic : bounds[dim];
       if (dim == dimension) {
         inferredDimAndBound = inferConcatenatedDimAndBound(
             leftSize, rightSize, leftBound, rightBound);
@@ -880,10 +931,9 @@ LogicalResult inferPadOp(Optional<Location> location, Value operand,
                              ") must match operand rank (", rank, ")");
 
   auto inputShape = inputType.getShape();
-  SmallVector<int64_t> resultShape(rank, ShapedType::kDynamicSize);
+  SmallVector<int64_t> resultShape(rank, ShapedType::kDynamic);
   ArrayRef<int64_t> inputBounds = encodingToBounds(inputType.getEncoding());
-  SmallVector<int64_t> resultBounds(inputBounds.size(),
-                                    ShapedType::kDynamicSize);
+  SmallVector<int64_t> resultBounds(inputBounds.size(), ShapedType::kDynamic);
 
   for (int i = 0, e = inputShape.size(); i < e; i++) {
     int64_t paddingLowVal = edgePaddingLow.getValues<APInt>()[i].getSExtValue();
@@ -916,6 +966,15 @@ LogicalResult inferPadOp(Optional<Location> location, Value operand,
   inferredReturnTypes.push_back(RankedTensorType::get(
       resultShape, inputType.getElementType(),
       boundsToEncoding(inputType.getEncoding(), resultBounds)));
+
+  return success();
+}
+
+LogicalResult inferOptimizationBarrierOp(
+    ValueRange operand, SmallVectorImpl<Type>& inferredReturnTypes) {
+  for (auto inputArgType : operand.getTypes()) {
+    inferredReturnTypes.emplace_back(inputArgType);
+  }
 
   return success();
 }
@@ -1153,9 +1212,8 @@ LogicalResult inferSliceOp(Optional<Location> location, Value operand,
   SmallVector<int64_t, 4> strideVals(strides.getValues<int64_t>());
 
   ArrayRef<int64_t> inputBounds = encodingToBounds(rankedTy.getEncoding());
-  SmallVector<int64_t> shape(rank, ShapedType::kDynamicSize);
-  SmallVector<int64_t> resultBounds(inputBounds.size(),
-                                    ShapedType::kDynamicSize);
+  SmallVector<int64_t> shape(rank, ShapedType::kDynamic);
+  SmallVector<int64_t> resultBounds(inputBounds.size(), ShapedType::kDynamic);
 
   for (int64_t i = 0, e = rank; i != e; i++) {
     // P3.

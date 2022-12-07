@@ -15,9 +15,14 @@ limitations under the License.
 
 #include "stablehlo/dialect/AssemblyFormat.h"
 
+#include <cstdint>
+#include <string>
+
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Regex.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/Support/LogicalResult.h"
 #include "stablehlo/dialect/Base.h"
 
 namespace mlir {
@@ -300,6 +305,46 @@ ParseResult parseDenseI64Array(OpAsmParser& parser,
   return success();
 }
 
+std::string dimSizeToString(int64_t dimSize) {
+  if (hlo::isDynamicDimSize(dimSize)) {
+    return "?";
+  }
+  return std::to_string(dimSize);
+}
+
+void printDimSizes(AsmPrinter& p, llvm::ArrayRef<int64_t> dimSizes) {
+  p << '[';
+  llvm::interleaveComma(
+      dimSizes, p, [&p](int64_t dimSize) { p << dimSizeToString(dimSize); });
+  p << ']';
+}
+
+FailureOr<SmallVector<int64_t>> parseDimSizes(AsmParser& parser) {
+  SmallVector<int64_t> dimSizes;
+  auto parseElt = [&]() -> ParseResult {
+    if (!parser.parseOptionalQuestion()) {
+      dimSizes.push_back(ShapedType::kDynamic);
+      return success();
+    }
+    return parser.parseInteger(dimSizes.emplace_back());
+  };
+  if (failed(parser.parseCommaSeparatedList(AsmParser::Delimiter::Square,
+                                            parseElt))) {
+    return failure();
+  }
+  return dimSizes;
+}
+
+ParseResult parseDimSizes(AsmParser& parser,
+                          FailureOr<SmallVector<int64_t>>& dimSizes) {
+  auto failOrDimSizes = parseDimSizes(parser);
+  if (failed(failOrDimSizes)) {
+    return failure();
+  }
+  dimSizes = std::move(*failOrDimSizes);
+  return success();
+}
+
 // Print attributes as e#m#
 void printExponentMantissa(AsmPrinter& p, Operation*, IntegerAttr exponent,
                            IntegerAttr mantissa) {
@@ -347,5 +392,14 @@ ParseResult parseExponentMantissa(AsmParser& parser, IntegerAttr& exponent,
   mantissa = parser.getBuilder().getI32IntegerAttr(mant);
   return success();
 }
+
+void printCustomCallTarget(AsmPrinter& p, Operation*, StringAttr target) {
+  p.printSymbolName(target.getValue());
+}
+
+ParseResult parseCustomCallTarget(AsmParser& parser, StringAttr& target) {
+  return parser.parseSymbolName(target);
+}
+
 }  // namespace hlo
 }  // namespace mlir
