@@ -2,4 +2,5 @@ build
 llvm-project
 llvm-build
 bazel-*
-.vscode/settings_recommend.json
+
+.vscode/settings.json
