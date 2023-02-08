@@ -4,10 +4,12 @@
 // CHECK-LABEL: func @zero_input
 func.func @zero_input() -> !stablehlo.token {
   // CHECK:      %0 = stablehlo.replica_id : tensor<ui32>
-  // CHECK-NEXT: %1 = stablehlo.create_token : !stablehlo.token
+  // CHECK-NEXT: %1 = stablehlo.partition_id : tensor<ui32>
+  // CHECK-NEXT: %2 = stablehlo.create_token : !stablehlo.token
   %0 = "stablehlo.replica_id"() : () -> tensor<ui32>
-  %1 = "stablehlo.create_token"() : () -> !stablehlo.token
-  return %1 : !stablehlo.token
+  %1 = "stablehlo.partition_id"() : () -> tensor<ui32>
+  %2 = "stablehlo.create_token"() : () -> !stablehlo.token
+  return %2 : !stablehlo.token
 }
 
 // CHECK-LABEL: func @zero_output_ret2
@@ -82,35 +84,35 @@ func.func @unary_ops(%arg0 : tensor<2xi32>, %arg1 : tensor<2xf32>) -> () {
 }
 
 // CHECK-LABEL: func @binary_ops
-func.func @binary_ops(%arg0: tensor<2xi1>, %arg1 : tensor<2xf32>) -> tensor<2xi1> {
+func.func @binary_ops(%arg0: tensor<2xi1>, %arg1 : tensor<2xf32>, %arg2 : tensor<2xi32>) -> tensor<2xi1> {
   // CHECK:      %0 = stablehlo.add %arg0, %arg0 : tensor<2xi1>
   // CHECK-NEXT: %1 = stablehlo.and %arg0, %arg0 : tensor<2xi1>
-  // CHECK-NEXT: %2 = stablehlo.atan2 %arg0, %arg0 : tensor<2xi1>
-  // CHECK-NEXT: %3 = stablehlo.divide %arg0, %arg0 : tensor<2xi1>
+  // CHECK-NEXT: %2 = stablehlo.atan2 %arg1, %arg1 : tensor<2xf32>
+  // CHECK-NEXT: %3 = stablehlo.divide %arg1, %arg1 : tensor<2xf32>
   // CHECK-NEXT: %4 = stablehlo.maximum %arg1, %arg1 : tensor<2xf32>
   // CHECK-NEXT: %5 = stablehlo.minimum %arg1, %arg1 : tensor<2xf32>
   // CHECK-NEXT: %6 = stablehlo.multiply %arg1, %arg1 : tensor<2xf32>
   // CHECK-NEXT: %7 = stablehlo.or %arg0, %arg0 : tensor<2xi1>
   // CHECK-NEXT: %8 = stablehlo.power %arg1, %arg1 : tensor<2xf32>
   // CHECK-NEXT: %9 = stablehlo.remainder %arg1, %arg1 : tensor<2xf32>
-  // CHECK-NEXT: %10 = stablehlo.shift_left %arg1, %arg1 : tensor<2xf32>
-  // CHECK-NEXT: %11 = stablehlo.shift_right_arithmetic %arg1, %arg1 : tensor<2xf32>
-  // CHECK-NEXT: %12 = stablehlo.shift_right_logical %arg1, %arg1 : tensor<2xf32>
+  // CHECK-NEXT: %10 = stablehlo.shift_left %arg2, %arg2 : tensor<2xi32>
+  // CHECK-NEXT: %11 = stablehlo.shift_right_arithmetic %arg2, %arg2 : tensor<2xi32>
+  // CHECK-NEXT: %12 = stablehlo.shift_right_logical %arg2, %arg2 : tensor<2xi32>
   // CHECK-NEXT: %13 = stablehlo.subtract %arg1, %arg1 : tensor<2xf32>
   // CHECK-NEXT: %14 = stablehlo.xor %arg0, %arg0 : tensor<2xi1>
   %0 = "stablehlo.add"(%arg0, %arg0) : (tensor<2xi1>, tensor<2xi1>) -> tensor<2xi1>
   %1 = "stablehlo.and"(%arg0, %arg0) : (tensor<2xi1>, tensor<2xi1>) -> tensor<2xi1>
-  %2 = "stablehlo.atan2"(%arg0, %arg0) : (tensor<2xi1>, tensor<2xi1>) -> tensor<2xi1>
-  %3 = "stablehlo.divide"(%arg0, %arg0) : (tensor<2xi1>, tensor<2xi1>) -> tensor<2xi1>
+  %2 = "stablehlo.atan2"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+  %3 = "stablehlo.divide"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   %4 = "stablehlo.maximum"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   %5 = "stablehlo.minimum"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   %6 = "stablehlo.multiply"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   %7 = "stablehlo.or"(%arg0, %arg0) : (tensor<2xi1>, tensor<2xi1>) -> tensor<2xi1>
   %8 = "stablehlo.power"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   %9 = "stablehlo.remainder"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
-  %10 = "stablehlo.shift_left"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
-  %11 = "stablehlo.shift_right_arithmetic"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
-  %12 = "stablehlo.shift_right_logical"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+  %10 = "stablehlo.shift_left"(%arg2, %arg2) : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
+  %11 = "stablehlo.shift_right_arithmetic"(%arg2, %arg2) : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
+  %12 = "stablehlo.shift_right_logical"(%arg2, %arg2) : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
   %13 = "stablehlo.subtract"(%arg1, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   %14 = "stablehlo.xor"(%arg0, %arg0) : (tensor<2xi1>, tensor<2xi1>) -> tensor<2xi1>
   func.return %0 : tensor<2xi1>
@@ -123,7 +125,7 @@ func.func @type_convert_ops(%arg0 : tensor<2xf32>) -> () {
   // CHECK-NEXT: %2 = stablehlo.bitcast_convert %arg0 : (tensor<2xf32>) -> tensor<2xi32>
   %0 = "stablehlo.convert"(%arg0) : (tensor<2xf32>) -> tensor<2xf64>
   %1 = "stablehlo.reshape"(%arg0) : (tensor<2xf32>) -> tensor<1x2xf32>
-  %2 = "stablehlo.bitcast_convert"(%arg0) : (tensor<2xf32>) -> tensor<2xi32> 
+  %2 = "stablehlo.bitcast_convert"(%arg0) : (tensor<2xf32>) -> tensor<2xi32>
   "stablehlo.return"() : () -> ()
 }
 
@@ -258,6 +260,15 @@ func.func @dimension_attr(%arg0 : tensor<1x2xf32>, %arg1 : tensor<3xi32>, %arg2 
   %4 = "stablehlo.dynamic_slice"(%arg2, %arg3, %arg3) {slice_sizes = dense<[1, 4]> : tensor<2xi64>} : (tensor<3x4xi32>, tensor<i64>, tensor<i64>) -> tensor<1x4xi32>
   %5 = "stablehlo.pad"(%arg4, %arg5) { edge_padding_high = dense<4> : tensor<1xi64>, edge_padding_low = dense<4> : tensor<1xi64>, interior_padding = dense<0> : tensor<1xi64>} : (tensor<8xf32>, tensor<f32>) -> tensor<16xf32>
   "stablehlo.return"() : () -> ()
+}
+
+// CHECK-LABEL: func @op_einsum
+func.func @op_einsum(%arg0: tensor<8x16xf32>, %arg1: tensor<16x8xf32>) -> tensor<8xf32> {
+  // CHECK:      %0 = stablehlo.einsum %arg0, %arg1, config = "ab,bc->ac" : (tensor<8x16xf32>, tensor<16x8xf32>) -> tensor<8x8xf32>
+  // CHECK-NEXT: %1 = stablehlo.unary_einsum %arg0, config = "ab->a" : (tensor<8x16xf32>) -> tensor<8xf32>
+  %0 = "stablehlo.einsum"(%arg0, %arg1) { einsum_config = "ab,bc->ac" } : (tensor<8x16xf32>, tensor<16x8xf32>) -> tensor<8x8xf32>
+  %1 = "stablehlo.unary_einsum"(%arg0) { einsum_config = "ab->a" } : (tensor<8x16xf32>) -> tensor<8xf32>
+  func.return %1 : tensor<8xf32>
 }
 
 // CHECK-LABEL: func @fft_op

@@ -18,6 +18,7 @@ limitations under the License.
 #define STABLEHLO_DIALECT_STABLEHLO_OPS_H
 
 #include <algorithm>
+#include <optional>
 
 #include "llvm/ADT/StringRef.h"
 #include "mlir/Dialect/Quant/QuantTypes.h"
@@ -90,10 +91,6 @@ class TokenType : public Type::TypeBase<TokenType, Type, TypeStorage> {
 LogicalResult verifyCollectivePermuteSourceTargetPairs(
     Operation *op, DenseIntElementsAttr attr);
 
-LogicalResult verifyReduceScatter(Operation *op, TypeRange operandTypes,
-                                  TypeRange resultTypes,
-                                  uint64_t scatterDimension);
-
 void printConvolutionDimensions(AsmPrinter &p, ConvDimensionNumbersAttr dnums);
 void printConvolutionDimensions(AsmPrinter &p, Operation *,
                                 ConvDimensionNumbersAttr dnums);
@@ -102,11 +99,11 @@ ParseResult parseConvolutionDimensions(AsmParser &parser,
 
 // Custom formatting for convolution window attributes.
 void printWindowAttributes(OpAsmPrinter &p, Operation *op,
-                           llvm::Optional<DenseIntElementsAttr> windowStrides,
-                           llvm::Optional<DenseIntElementsAttr> padding,
-                           llvm::Optional<DenseIntElementsAttr> lhsDilation,
-                           llvm::Optional<DenseIntElementsAttr> rhsDilation,
-                           llvm::Optional<DenseElementsAttr> windowReversal);
+                           std::optional<DenseIntElementsAttr> windowStrides,
+                           std::optional<DenseIntElementsAttr> padding,
+                           std::optional<DenseIntElementsAttr> lhsDilation,
+                           std::optional<DenseIntElementsAttr> rhsDilation,
+                           std::optional<DenseElementsAttr> windowReversal);
 
 ParseResult parseWindowAttributes(OpAsmParser &parser,
                                   DenseIntElementsAttr &windowStrides,

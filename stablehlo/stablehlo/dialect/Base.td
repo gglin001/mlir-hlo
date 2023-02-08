@@ -17,7 +17,6 @@ limitations under the License.
 #ifndef STABLEHLO_DIALECT_BASE
 #define STABLEHLO_DIALECT_BASE
 
-include "mlir/Dialect/Quant/QuantOpsBase.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/OpBase.td"
@@ -34,7 +33,7 @@ def HLO_SInt : SignlessIntOfWidths<[4, 8, 16, 32, 64]>;
 def HLO_UInt : UnsignedIntOfWidths<[4, 8, 16, 32, 64]>;
 def HLO_Int : AnyTypeOf<[HLO_SInt, HLO_UInt]>;
 
-def HLO_Float : AnyTypeOf<[F16, F32, F64, BF16]>;
+def HLO_Float : AnyTypeOf<[F8E4M3FN, F8E5M2, F16, F32, F64, BF16]>;
 def HLO_Float32Or64 : AnyTypeOf<[F32, F64]>;
 
 def HLO_Complex : Complex<AnyTypeOf<[F32, F64]>>;
@@ -44,7 +43,7 @@ def HLO_Complex : Complex<AnyTypeOf<[F32, F64]>>;
 //===----------------------------------------------------------------------===//
 
 // TODO(b/230381284): Upstream width-specific uniform quantized element types.
-class UniformQuantizedSignedInt<int width>
+class StableHLO_UniformQuantizedSignedInt<int width>
   : Type<Or<[
       And<[CPred<"$_self.isa<mlir::quant::UniformQuantizedType>()">,
            CPred<"$_self.cast<mlir::quant::UniformQuantizedType>()" #
@@ -61,7 +60,7 @@ class UniformQuantizedSignedInt<int width>
   int bitwidth = width;
 }
 
-class UniformQuantizedUnsignedInt<int width>
+class StableHLO_UniformQuantizedUnsignedInt<int width>
   : Type<Or<[
       And<[CPred<"$_self.isa<mlir::quant::UniformQuantizedType>()">,
            CPred<"$_self.cast<mlir::quant::UniformQuantizedType>()" #
@@ -78,20 +77,20 @@ class UniformQuantizedUnsignedInt<int width>
   int bitwidth = width;
 }
 
-class UniformQuantizedSignedIntOfWidths<list<int> widths> :
-    AnyTypeOf<!foreach(w, widths, UniformQuantizedSignedInt<w>),
+class StableHLO_UniformQuantizedSignedIntOfWidths<list<int> widths> :
+    AnyTypeOf<!foreach(w, widths, StableHLO_UniformQuantizedSignedInt<w>),
               !interleave(widths, "/") # "-bit uniform quantized signed " #
               "integer">;
 
-class UniformQuantizedUnsignedIntOfWidths<list<int> widths> :
-    AnyTypeOf<!foreach(w, widths, UniformQuantizedUnsignedInt<w>),
+class StableHLO_UniformQuantizedUnsignedIntOfWidths<list<int> widths> :
+    AnyTypeOf<!foreach(w, widths, StableHLO_UniformQuantizedUnsignedInt<w>),
               !interleave(widths, "/") # "-bit uniform quantized unsigned " #
               "integer">;
 
 // Integer-based uniform quantized types. The definitions can be used to specify
 // operand's tensor types.
-def HLO_QuantizedSignedInt : UniformQuantizedSignedIntOfWidths<[4, 8, 16, 32]>;
-def HLO_QuantizedUnsignedInt : UniformQuantizedUnsignedIntOfWidths<[4, 8, 16, 32]>;
+def HLO_QuantizedSignedInt : StableHLO_UniformQuantizedSignedIntOfWidths<[4, 8, 16, 32]>;
+def HLO_QuantizedUnsignedInt : StableHLO_UniformQuantizedUnsignedIntOfWidths<[4, 8, 16, 32]>;
 def HLO_QuantizedInt :
     AnyTypeOf<[HLO_QuantizedSignedInt, HLO_QuantizedUnsignedInt]>;
 
@@ -136,11 +135,6 @@ def HLO_DimensionValue : AnyTypeOf<[Index, HLO_Int]>;
 // Dynamic representation of a shape vector as a tensor.
 def HLO_DimensionTensor : 1DTensorOf<[HLO_DimensionValue]>;
 
-// In general, static shaped tensor constraints should be avoided unless
-// it is for a legacy op which is only correct with static shapes.
-def HLO_StaticShapeTensor : StaticShapeTensorOf<[
-      HLO_Float, HLO_Pred, HLO_Int, HLO_Complex, HLO_QuantizedInt]>;
-
 //===----------------------------------------------------------------------===//
 // HLO combined type definitions.
 //===----------------------------------------------------------------------===//
@@ -159,6 +153,22 @@ def HLO_IntFpOrComplexTensor : TensorOf<[HLO_Int, HLO_Float, HLO_Complex]>;
 
 // Any pred, int or floating-point tensor types
 def HLO_PredIntOrFpTensor : TensorOf<[HLO_Pred, HLO_Int, HLO_Float]>;
+
+//===----------------------------------------------------------------------===//
+// HLO static shape type definitions.
+//===----------------------------------------------------------------------===//
+
+// In general, static shaped tensor constraints should be avoided unless
+// it is for a legacy op which is only correct with static shapes.
+def HLO_StaticShapeTensor : StaticShapeTensorOf<[
+      HLO_Float, HLO_Pred, HLO_Int, HLO_Complex, HLO_QuantizedInt]>;
+
+def HLO_StaticShapeTensorOrToken : AnyTypeOf<[HLO_StaticShapeTensor, HLO_Token]>;
+
+def HLO_StaticShapeIntOrFpTensor : StaticShapeTensorOf<[HLO_Int, HLO_Float]>;
+
+def HLO_StaticShapeIntFpOrComplexTensor :
+  StaticShapeTensorOf<[HLO_Int, HLO_Float, HLO_Complex]>;
 
 //===----------------------------------------------------------------------===//
 // HLO traits

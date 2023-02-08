@@ -70,6 +70,7 @@ add_mlir_dialect_library(ChloOps
   MLIRInferTypeOpInterface
   MLIRIR
   MLIRQuantDialect
+  MLIRTransformUtils
 )
 
 target_include_directories(ChloOps INTERFACE
@@ -84,15 +85,17 @@ add_mlir_dialect_library(StablehloRegister
   DEPENDS
   ChloOpsIncGen
   StablehloOpsIncGen
+  VhloOpsIncGen
 
   LINK_LIBS PUBLIC
   ChloOps
   StablehloOps
+  VhloOps
 )
 
 add_mlir_dialect_library(StablehloAssemblyFormat
   PARTIAL_SOURCES_INTENDED
-  AssemblyFormat.cpp 
+  AssemblyFormat.cpp
 
   LINK_LIBS PUBLIC
   StablehloBase
@@ -101,7 +104,7 @@ add_mlir_dialect_library(StablehloAssemblyFormat
 
 add_mlir_dialect_library(StablehloTypeInference
   PARTIAL_SOURCES_INTENDED
-  TypeInference.cpp 
+  TypeInference.cpp
 
   LINK_LIBS PUBLIC
   MLIRInferTypeOpInterface
@@ -146,4 +149,69 @@ add_mlir_dialect_library(StablehloOps
 target_include_directories(StablehloOps INTERFACE
   $<BUILD_INTERFACE:${STABLEHLO_SOURCE_DIR}>
   $<BUILD_INTERFACE:${STABLEHLO_BINARY_DIR}>
+)
+
+set(LLVM_TARGET_DEFINITIONS VhloOps.td)
+mlir_tablegen(VhloOps.h.inc -gen-op-decls)
+mlir_tablegen(VhloOps.cpp.inc -gen-op-defs)
+mlir_tablegen(VhloOpInterfaces.h.inc -gen-op-interface-decls)
+mlir_tablegen(VhloOpInterfaces.cpp.inc -gen-op-interface-defs)
+set(LLVM_TARGET_DEFINITIONS VhloEnums.td)
+mlir_tablegen(VhloEnums.h.inc -gen-enum-decls)
+mlir_tablegen(VhloEnums.cpp.inc -gen-enum-defs)
+set(LLVM_TARGET_DEFINITIONS VhloOps.td)
+mlir_tablegen(VhloAttrs.h.inc -gen-attrdef-decls)
+mlir_tablegen(VhloAttrs.cpp.inc -gen-attrdef-defs)
+set(LLVM_TARGET_DEFINITIONS VhloAttrs.td)
+mlir_tablegen(VhloAttrInterfaces.h.inc -gen-attr-interface-decls)
+mlir_tablegen(VhloAttrInterfaces.cpp.inc -gen-attr-interface-defs)
+set(LLVM_TARGET_DEFINITIONS VhloTypes.td)
+mlir_tablegen(VhloTypeInterfaces.h.inc -gen-type-interface-decls)
+mlir_tablegen(VhloTypeInterfaces.cpp.inc -gen-type-interface-defs)
+set(LLVM_TARGET_DEFINITIONS VhloOps.td)
+mlir_tablegen(VhloTypeDefs.h.inc -gen-typedef-decls --typedefs-dialect=vhlo)
+mlir_tablegen(VhloTypeDefs.cpp.inc -gen-typedef-defs --typedefs-dialect=vhlo)
+add_public_tablegen_target(VhloOpsIncGen)
+add_dependencies(mlir-headers VhloOpsIncGen)
+
+add_mlir_dialect_library(VhloOps
+  PARTIAL_SOURCES_INTENDED
+  VhloBytecode.cpp
+  VhloOps.cpp
+
+  DEPENDS
+  VhloOpsIncGen
+
+  LINK_LIBS PUBLIC
+  StablehloAssemblyFormat
+  MLIRIR
+  MLIRQuantDialect
+  MLIRShapeDialect
+  MLIRSupport
+)
+
+add_mlir_dialect_library(VhloTypes
+  PARTIAL_SOURCES_INTENDED
+  VhloTypes.cpp
+
+  DEPENDS
+  VhloOpsIncGen
+
+  LINK_LIBS PUBLIC
+  StablehloAssemblyFormat
+  VhloVersion
+  MLIRIR
+  MLIRQuantDialect
+  MLIRShapeDialect
+  MLIRSupport
+  MLIRTransformUtils
+)
+
+add_mlir_dialect_library(VhloVersion
+  PARTIAL_SOURCES_INTENDED
+  Version.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+  MLIRSupport
 )

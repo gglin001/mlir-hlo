@@ -18,6 +18,7 @@ limitations under the License.
 #define STABLEHLO_DIALECT_BASE_H
 
 #include <algorithm>
+#include <optional>
 
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
@@ -45,10 +46,17 @@ namespace hlo {
 
 // TODO(zhouxin) change to a better name as it's used by both of size and bound
 // Check if the dimension size is dynamic.
-// TODO(zhouxin) add isStaticDimSize() as well.
 inline static bool isDynamicDimSize(int64_t val) {
   return ShapedType::isDynamic(val);
 }
+
+inline static bool isStaticDimSize(int64_t val) {
+  return !isDynamicDimSize(val);
+}
+
+//  Verifies that the two types have compatible shape with bounds but allows
+//  different element types.
+LogicalResult verifyCompatibleShapeWithBounds(Type type1, Type type2);
 
 // Returns true if the given types are the same for the purposes of HLO type
 // inference, accounting for special properties of quantization and sparsity.
@@ -66,16 +74,31 @@ std::pair<int64_t, int64_t> inferConcatenatedDimAndBound(int64_t leftSize,
                                                          int64_t leftBound,
                                                          int64_t rightBound);
 
-FailureOr<std::pair<int64_t, int64_t>> inferMergedDimAndBound(
+FailureOr<std::pair<int64_t, int64_t>> inferMostSpecificDimAndBound(
     Optional<Location> location, int64_t dim, int64_t leftSize,
     int64_t rightSize, int64_t leftBound, int64_t rightBound);
 
+FailureOr<std::pair<int64_t, int64_t>> inferLeastSpecificDimAndBound(
+    Optional<Location> location, int64_t dim, int64_t leftSize,
+    int64_t rightSize, int64_t leftBound, int64_t rightBound);
+
+// Infer single least specific return type from inputTypes with support for
+// bounds. (Size, bound) of each dimension of the return type will be merged
+// from corresponding dimensions of every inputType by extracting the least
+// specific one. Return unranked tensor if any input is unranked.
+FailureOr<Type> inferLeastSpecificType(Optional<Location> location,
+                                       TypeRange inputTypes);
+
 // Infer single most specific return type from inputTypes with support for
 // bounds. (Size, bound) of each dimension of the return type will be merged
-// from corresponding dimensions of every inputType by merging them.
-LogicalResult inferMostSpecificType(Optional<Location> location,
-                                    TypeRange inputTypes,
-                                    SmallVectorImpl<Type> &inferredReturnTypes);
+// from corresponding dimensions of every inputType by extracting the most
+// specific one. Return unranked tensor if all inputs are unranked.
+FailureOr<Type> inferMostSpecificType(Optional<Location> location,
+                                      TypeRange inputTypes);
+
+LogicalResult inferMostSpecificTypeComponents(
+    std::optional<Location> location, TypeRange inputTypes,
+    SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes);
 
 // Shape derivation function that computes the shape of the result based on an
 // operand. For a 2-dimensional input tensor, this produces IR of the form
@@ -100,9 +123,9 @@ TensorType getSameShapeTensorType(TensorType tensorType, Type elementType);
 //   Ex: tensor<4xcomplex<f32>>  -->  tensor<4xf32>
 Type createRealType(TensorType type);
 
-// Verify bounds expressed by HLO_BoundedInterface against the provided type.
-// See documentation for HLO_BoundedInterface for the list of checks.
-LogicalResult verifyBounds(ArrayRef<int64_t> bounds, ShapedType type,
+// Verify bounds expressed by HLO_BoundedAttrInterface against the provided
+// type. See documentation for HLO_BoundedAttrInterface for the list of checks.
+LogicalResult verifyBounds(ArrayRef<int64_t> bounds, RankedTensorType type,
                            function_ref<InFlightDiagnostic()> emitError);
 
 // If an encoding attribute conforms to HLO_BoundedAttrInterface, return the
@@ -114,14 +137,23 @@ ArrayRef<int64_t> encodingToBounds(Attribute encoding);
 // the underlying dialect that knows how to create these attributes.
 Attribute boundsToEncoding(Attribute prototype, ArrayRef<int64_t> bounds);
 
-// This interface is used for HLO dialects that have accompanying
-// BoundedAttrInterface attributes which can carry bounds for dimension sizes
-// of accompanying shaped types.
-class BoundedDialectInterface
-    : public DialectInterface::Base<BoundedDialectInterface> {
+// This interface is implemented by both StableHLO and MHLO dialects
+// and is used as the foundation for sharing verification, type inference and
+// prettyprinting logic between them.
+class HloDialectInterface : public DialectInterface::Base<HloDialectInterface> {
  public:
-  BoundedDialectInterface(Dialect *dialect) : Base(dialect) {}
-  virtual Attribute createBoundedAttr(ArrayRef<int64_t> bounds) const = 0;
+  HloDialectInterface(Dialect *dialect) : Base(dialect) {}
+
+  // Creates a TokenType type, specific to this dialect.
+  // See docs for the particular type in the corresponding dialect.
+  virtual Type createTokenType() const = 0;
+
+  // Check whether the type is of TokenType in the corresponding dialect.
+  virtual bool isTokenType(Type type) const = 0;
+
+  // Creates a TypeExtensions attribute, specific to this dialect.
+  // See docs for the particular attribute in the corresponding dialect.
+  virtual Attribute createTypeExtensions(ArrayRef<int64_t> bounds) const = 0;
 };
 
 namespace bytecode {
@@ -210,7 +242,7 @@ class CompatibleOperandsAndResultType
   }
 
   static LogicalResult inferReturnTypes(
-      MLIRContext * /*context*/, Optional<Location> location,
+      MLIRContext * /*context*/, std::optional<Location> location,
       ValueRange operands, DictionaryAttr /*attributes*/,
       RegionRange /*regions*/, SmallVectorImpl<Type> &inferredReturnTypes) {
     // TODO(b/231358795): Review the use of InferTypeOpInterface for ops that
@@ -220,9 +252,10 @@ class CompatibleOperandsAndResultType
           location,
           "Expected non-empty operands for [CompatibleOperandsAndResultType]");
 
-    if (failed(inferMostSpecificType(location, operands.getTypes(),
-                                     inferredReturnTypes)))
-      return failure();
+    auto inferredTypeOrErr =
+        inferMostSpecificType(location, operands.getTypes());
+    if (failed(inferredTypeOrErr)) return failure();
+    inferredReturnTypes.emplace_back(*inferredTypeOrErr);
     return success();
   }
 
@@ -230,7 +263,7 @@ class CompatibleOperandsAndResultType
   // It needs to be paired with INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS
   // (see examples in StablehloOps.cpp).
   static LogicalResult inferReturnTypeComponentsFromOperands(
-      MLIRContext *context, Optional<Location> location,
+      MLIRContext *context, std::optional<Location> location,
       ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
       SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {
     SmallVector<Type> inferredReturnTypes;

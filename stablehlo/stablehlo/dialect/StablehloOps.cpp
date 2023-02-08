@@ -25,6 +25,7 @@ limitations under the License.
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -95,73 +96,17 @@ void createArgs(ArrayRef<OpAsmParser::UnresolvedOperand> operands,
   }
 }
 
-// Checks if the vector `nums` has duplicates.
-const auto hasDuplicates = [](const ArrayRef<int64_t> nums) {
-  llvm::SmallDenseSet<int64_t> set(nums.begin(), nums.end());
-  return set.size() != nums.size();
-};
-
 //===----------------------------------------------------------------------===//
 // Utilities for the canonicalize patterns
 //===----------------------------------------------------------------------===//
 
-// Verifies that dimension attribute for the op correctly indexes in operand or
-// result shape.
-template <typename OpT>
-static LogicalResult verifyDimAttr(OpT op) {
-  int64_t rank = -1;
-  if (auto ty =
-          op.getOperand().getType().template dyn_cast<RankedTensorType>()) {
-    rank = ty.getRank();
-  } else if (auto ty = op.getType().template dyn_cast<RankedTensorType>()) {
-    rank = ty.getRank();
-  } else {
-    return success();
-  }
-
-  int64_t dim = op.getDimension();
-  if (dim < 0 || dim >= rank)
-    return op.emitOpError() << "requires dimension attribute in range [0, "
-                            << rank << "); found (" << dim << ")";
-  return success();
-}
-
-// Common shape function helper for RngNormal and RngUniform.
-static LogicalResult rngInferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, RegionRange regions,
-    SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  if (operands.size() != 3)
-    return emitOptionalError(location, "expected 3 operands");
-
-  SmallVector<int64_t> shapeVector;
-  Value shapeOperand = operands[2];
-  auto shapeOperandType = shapeOperand.getType().cast<ShapedType>();
-  Type elementType = getElementTypeOrSelf(operands[1]);
-
-  // Operand `shape` (1D by ODS) may be a constant or not, if `shape` is:
-  // 1, not constant and have dynimic dim (tensor<?x>): infer tensor<*x>.
-  // 2. not constant nor dynimic (e.g. tensor<3xi64>): infer tensor<?x?x?x>.
-  // 3. constant (e.g. dense<[2, 3, 5]>): infer tensor<2x3x5x>.
-
-  // Match to check whether the `shape` operand is a constant.
-  DenseIntElementsAttr shape;
-  if (!matchPattern(shapeOperand, m_Constant(&shape))) {
-    int size = shapeOperandType.getDimSize(0);
-    if (hlo::isDynamicDimSize(size)) {
-      inferredReturnShapes.emplace_back(elementType);
-      return success();
-    }
-    shapeVector.resize(size, ShapedType::kDynamic);
-    inferredReturnShapes.emplace_back(shapeVector, elementType);
-    return success();
-  }
-
-  // `shape` operand is a constant.
-  shapeVector.reserve(shape.size());
-  for (const APInt& fp : shape.getValues<APInt>())
-    shapeVector.push_back(fp.getSExtValue());
-  inferredReturnShapes.emplace_back(shapeVector, elementType);
+LogicalResult verifyDimInBounds(Location loc, ShapedType type, int64_t dim) {
+  if (dim < 0)
+    return emitOptionalError(
+        loc, "requires non-negative dimension attribute; found (", dim, ")");
+  if (type.hasRank() && dim >= type.getRank())
+    return emitOptionalError(loc, "requires dimension attribute in range [0, ",
+                             type.getRank(), "); found (", dim, ")");
   return success();
 }
 
@@ -172,7 +117,6 @@ Value maybeCastTo(OpBuilder& b, Location loc, Value value, Type type) {
   assert(type.isIndex() || value.getType().isIndex());
   return b.create<arith::IndexCastOp>(loc, type, value);
 }
-
 }  // namespace
 
 //===----------------------------------------------------------------------===//
@@ -180,10 +124,10 @@ Value maybeCastTo(OpBuilder& b, Location loc, Value value, Type type) {
 //===----------------------------------------------------------------------===//
 
 LogicalResult TypeExtensionsAttr::verifyEncoding(
-    llvm::ArrayRef<int64_t> bounds, mlir::Type elementType,
+    llvm::ArrayRef<int64_t> shape, mlir::Type elementType,
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError) const {
   return hlo::verifyBounds(
-      getBounds(), RankedTensorType::get(bounds, elementType), emitError);
+      getBounds(), RankedTensorType::get(shape, elementType), emitError);
 }
 
 //===----------------------------------------------------------------------===//
@@ -201,77 +145,10 @@ void CollectivePermuteOp::build(OpBuilder& odsBuilder, OperationState& odsState,
 // ReduceScatterOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult verifyReduceScatter(Operation* op, TypeRange operandTypes,
-                                  TypeRange resultTypes,
-                                  uint64_t scatterDimension) {
-  // If operand and result are both ranked, then the size of the scatter
-  // dimension in the operand should be a multiple of the size of the scatter
-  // dimension in the result.
-
-  // TODO(zhouxin) Change the ODS definition to return int64_t.
-  if (static_cast<int64_t>(scatterDimension) < 0) {
-    return op->emitOpError("expects scatter_dimension >= 0");
-  }
-
-  for (auto it : llvm::zip(operandTypes, resultTypes)) {
-    auto operandType = std::get<0>(it).cast<ShapedType>();
-    auto resultType = std::get<1>(it).cast<ShapedType>();
-    if (!operandType.hasRank() || !resultType.hasRank()) continue;
-    if (operandType.getRank() != resultType.getRank())
-      return op->emitOpError() << "operand and result should have same rank";
-    if (static_cast<int64_t>(scatterDimension) >= operandType.getRank())
-      return op->emitOpError()
-             << "scatter dim should be less than operand/result rank";
-    if (operandType.isDynamicDim(scatterDimension) ||
-        resultType.isDynamicDim(scatterDimension))
-      continue;
-    if (operandType.getDimSize(scatterDimension) == 0)
-      return op->emitOpError() << "operand scatter dimension cannot be zero";
-    if (resultType.getDimSize(scatterDimension) == 0)
-      return op->emitOpError() << "result scatter dimension cannot be zero";
-    if ((operandType.getDimSize(scatterDimension) %
-         resultType.getDimSize(scatterDimension)) != 0)
-      return op->emitOpError()
-             << "operand scatter dimension has size "
-             << operandType.getDimSize(scatterDimension)
-             << ", expected to be a multiple of result scatter dimension size "
-             << resultType.getDimSize(scatterDimension);
-
-    // Non scatter dimensions should be equal.
-    for (uint64_t index : llvm::seq<uint64_t>(0, operandType.getRank())) {
-      if (index == scatterDimension || operandType.isDynamicDim(index) ||
-          resultType.isDynamicDim(index))
-        continue;
-      if (operandType.getDimSize(index) != resultType.getDimSize(index))
-        return op->emitOpError()
-               << "non scatter dimensions should be same for operand ("
-               << operandType.getDimSize(index) << ") and result ("
-               << resultType.getDimSize(index) << ")";
-    }
-  }
-  return success();
-}
-
 LogicalResult ReduceScatterOp::verify() {
-  if (failed(hlo::verifyReplicaGroups(getLoc(), getReplicaGroups(),
-                                      /*allGroupsMustHaveSameSize=*/true,
-                                      /*expectedGroupSize*/ llvm::None)))
-    return failure();
-  auto operandType = getOperand().getType().cast<TensorType>();
-  bool operandTypeRanked = operandType.isa<RankedTensorType>();
-  Block& block = getComputation().front();
-  SmallVector<TensorType> accumulatorSubshapes;
-  if (failed(hlo::verifyReducerShape(
-          this->getLoc(), block, {operandType},
-          {RankedTensorType::get({}, operandType.getElementType())},
-          /*numInputs=*/1, /*allowedDimensions=*/{},
-          /*allInputsUnranked=*/!operandTypeRanked, accumulatorSubshapes)))
-    return failure();
-
-  return verifyReduceScatter(*this,
-                             /*operandTypes=*/{getOperand().getType()},
-                             /*resultTypes=*/{getType()},
-                             /*scatterDimension=*/getScatterDimension());
+  return hlo::verifyReduceScatterOp(
+      getLoc(), getOperand(), getScatterDimension(), getReplicaGroups(),
+      getUseGlobalDeviceIds(), getComputation(), getResult());
 }
 
 //===----------------------------------------------------------------------===//
@@ -282,7 +159,7 @@ LogicalResult ReduceScatterOp::verify() {
 // support quantization or sparsity.
 #define INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(Op)                        \
   LogicalResult Op::inferReturnTypeComponents(                                \
-      MLIRContext* context, Optional<Location> location,                      \
+      MLIRContext* context, std::optional<Location> location,                 \
       ValueShapeRange operands, DictionaryAttr attributes,                    \
       RegionRange regions,                                                    \
       SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {          \
@@ -333,11 +210,23 @@ INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(TanhOp)
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(XorOp)
 
 //===----------------------------------------------------------------------===//
+// AfterAllOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult AfterAllOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto dialect = context->getLoadedDialect<StablehloDialect>();
+  return hlo::inferAfterAllOp(dialect, location, inferredReturnTypes);
+}
+
+//===----------------------------------------------------------------------===//
 // ConstantOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult ConstantOp::fold(ArrayRef<Attribute> operands) {
-  assert(operands.empty() && "constant has no operands");
+OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) {
+  assert(adaptor.getOperands().empty() && "constant has no operands");
 
   // Return the held attribute value.
   return getValue();
@@ -370,13 +259,12 @@ void ConstantOp::build(OpBuilder& /*builder*/, OperationState& result,
 }
 
 LogicalResult ConstantOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   ConstantOpAdaptor adaptor(operands, attributes);
-  Type type = adaptor.getValue().getType();
-  inferredReturnTypes.push_back(type);
-  return success();
+  return hlo::inferConstantOp(location, adaptor.getValue(),
+                              inferredReturnTypes);
 }
 
 bool ConstantOp::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
@@ -436,6 +324,18 @@ void ConstantOp::print(::mlir::OpAsmPrinter& p) {
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"value"});
   p << ' ';
   p.printStrippedAttrOrType(getValueAttr());
+}
+
+//===----------------------------------------------------------------------===//
+// CreateTokenOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult CreateTokenOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto dialect = context->getLoadedDialect<StablehloDialect>();
+  return hlo::inferCreateTokenOp(dialect, location, inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -597,112 +497,24 @@ void CustomCallOp::getEffects(
 // CholeskyOp
 //===----------------------------------------------------------------------===//
 
-// The following properties are already enforced by the ODS:
-//   P0. a.element_type is floating or complex
-// We intend to verify the following properties
-//   P1. The 'a' argument to Cholesky must have rank >= 2, got shape %s
-//   P2. The two minor dimensions of 'a' must have equal size, got %s.
 LogicalResult CholeskyOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   CholeskyOp::Adaptor adaptor(operands, attributes, regions);
-  Type aType = adaptor.getA().getType();
-  RankedTensorType aRankedType = aType.dyn_cast<RankedTensorType>();
-  if (!aRankedType) {
-    inferredReturnShapes.emplace_back(
-        aType.cast<TensorType>().getElementType());
-    return success();
-  }
-
-  ArrayRef<int64_t> aShape = aRankedType.getShape();
-  if (aShape.size() < 2) {
-    return emitOptionalError(
-        location, "argument 'a' must have rank >= 2, got shape ", aShape, ".");
-  }
-
-  int64_t lastDim = aShape[aShape.size() - 1];
-  int64_t penultimateDim = aShape[aShape.size() - 2];
-  if (!hlo::isDynamicDimSize(lastDim) &&
-      !hlo::isDynamicDimSize(penultimateDim) && lastDim != penultimateDim) {
-    return emitOptionalError(
-        location, "minor dimensions of 'a' must have equal size, got shape ",
-        aShape, ".");
-  }
-  inferredReturnShapes.emplace_back(aRankedType.getShape(),
-                                    aRankedType.getElementType());
-  return success();
+  return hlo::inferCholeskyOp(location, adaptor.getA(), inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
 // DotOp
 //===----------------------------------------------------------------------===//
-namespace {
-bool dimCompatible(int64_t a, int64_t b) {
-  return hlo::isDynamicDimSize(a) || hlo::isDynamicDimSize(b) || a == b;
-}
-
-ShapedType inferDotReturnType(ShapedType lhs, ShapedType rhs) {
-  auto elementType = lhs.getElementType();
-  if (!lhs.hasRank() || !rhs.hasRank()) {
-    return UnrankedTensorType::get(elementType);
-  }
-
-  // vector dot vector
-  if (1 == lhs.getRank() && 1 == rhs.getRank() &&
-      dimCompatible(lhs.getDimSize(0), rhs.getDimSize(0))) {
-    return RankedTensorType::get({}, elementType);
-  }
-  // matrix dot vector
-  if (2 == lhs.getRank() && 1 == rhs.getRank() &&
-      dimCompatible(lhs.getDimSize(1), rhs.getDimSize(0))) {
-    return RankedTensorType::get({lhs.getDimSize(0)}, elementType);
-  }
-  // vector dot matrix
-  if (1 == lhs.getRank() && 2 == rhs.getRank() &&
-      dimCompatible(lhs.getDimSize(0), rhs.getDimSize(0))) {
-    return RankedTensorType::get({rhs.getDimSize(1)}, elementType);
-  }
-  // matrix dot matrix
-  if (2 == lhs.getRank() && 2 == rhs.getRank() &&
-      dimCompatible(lhs.getDimSize(1), rhs.getDimSize(0))) {
-    int64_t shape[2] = {lhs.getDimSize(0), rhs.getDimSize(1)};
-    return RankedTensorType::get(shape, elementType);
-  }
-  return {};
-}
-}  // namespace
-
-LogicalResult DotOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands, DictionaryAttr,
-    RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  DotOp::Adaptor op(operands);
-  auto lhsType = op.getLhs().getType().cast<ShapedType>();
-  auto rhsType = op.getRhs().getType().cast<ShapedType>();
-  inferredReturnTypes.push_back(inferDotReturnType(lhsType, rhsType));
-  return success();
-}
 
 LogicalResult DotOp::verify() {
-  auto lhsType = getLhs().getType().cast<ShapedType>();
-  auto rhsType = getRhs().getType().cast<ShapedType>();
-  auto resultType = getType().cast<ShapedType>();
-  auto expectReturnType = inferDotReturnType(lhsType, rhsType);
-  if (!expectReturnType) {
-    return emitError() << "Unexpected operands type: " << lhsType << " and "
-                       << rhsType;
-  }
-  if (resultType.hasRank() && expectReturnType.hasRank()) {
-    if (resultType.getShape() != expectReturnType.getShape()) {
-      return emitError() << "Unexpected result type: has " << resultType
-                         << " but inferred " << expectReturnType
-                         << " from operands " << lhsType << " and " << rhsType;
-    }
-  }
-  return success();
+  return hlo::verifyDotOp(getLoc(), getLhs(), getRhs(), getPrecisionConfig(),
+                          getResult());
 }
 
-// PrecisionConfig - Optional attribute, print the array as raw enums
+// PrecisionConfig - std::optional attribute, print the array as raw enums
 //
 // {precision_config = [#stablehlo<precision DEFAULT>,
 //                      #stablehlo<precision DEFAULT>]}
@@ -713,7 +525,7 @@ void printPrecisionConfig(OpAsmPrinter& p, Operation*,
   if (!attrArr) return;
 
   p << ", precision = [";
-  llvm::interleaveComma(attrArr, p, [&](Attribute const& attr) {
+  llvm::interleaveComma(attrArr, p, [&](Attribute attr) {
     p << stringifyPrecision(attr.cast<PrecisionAttr>().getValue());
   });
   p << ']';
@@ -744,18 +556,14 @@ ParseResult parsePrecisionConfig(OpAsmParser& parser, mlir::ArrayAttr& attr) {
 // DotGeneralOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult DotGeneralOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
-    SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  DotGeneralOp::Adaptor adaptor(operands, attributes, regions);
-  return hlo::inferDotGeneralOp(
-      location, adaptor.getLhs(), adaptor.getRhs(),
-      adaptor.getDotDimensionNumbersAttr().getLhsBatchingDimensions(),
-      adaptor.getDotDimensionNumbersAttr().getRhsBatchingDimensions(),
-      adaptor.getDotDimensionNumbersAttr().getLhsContractingDimensions(),
-      adaptor.getDotDimensionNumbersAttr().getRhsContractingDimensions(),
-      inferredReturnShapes);
+LogicalResult DotGeneralOp::verify() {
+  return hlo::verifyDotGeneralOp(
+      getLoc(), getLhs(), getRhs(),
+      getDotDimensionNumbersAttr().getLhsBatchingDimensions(),
+      getDotDimensionNumbersAttr().getRhsBatchingDimensions(),
+      getDotDimensionNumbersAttr().getLhsContractingDimensions(),
+      getDotDimensionNumbersAttr().getRhsContractingDimensions(),
+      getPrecisionConfig(), getResult());
 }
 
 LogicalResult DotGeneralOp::reifyReturnTypeShapes(
@@ -799,107 +607,15 @@ LogicalResult DotGeneralOp::reifyReturnTypeShapes(
 // FftOp
 //===----------------------------------------------------------------------===//
 
-// We intend to verify the following properties
-// P1. 1 <= rank <= 3
-// P2. Element types agree with fft_type
-// P3. Operand shape dimensions agree with fft_length for the given fft_type
 LogicalResult FftOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   FftOp::Adaptor adaptor(operands, attributes, regions);
-  auto fftLength = adaptor.getFftLength().getValues<int64_t>();
-  int64_t fftRank = fftLength.size();
-
-  // P1.
-  if (fftRank > 3 || fftRank < 1) {
-    return emitOptionalError(location, "rank must be between 1 and 3, but got ",
-                             fftRank, ".");
-  }
-
-  // P2. Element type agreement
-  // FFT : C -> C
-  // IFFT : C -> C
-  // RFFT : R -> C
-  // IRFFT : C -> R
-  auto fftType = adaptor.getFftType();
-  auto operandType = adaptor.getOperand().getType().cast<TensorType>();
-  Type operandElementType = operandType.getElementType();
-  // Check the input element type and infer return element type
-  if (fftType == FftType::RFFT) {
-    if (!operandElementType.isF32() && !operandElementType.isF64()) {
-      return emitOptionalError(
-          location, "RFFT requires f32 or f64 input type, but is given ",
-          operandElementType, ".");
-    }
-  } else {
-    if (!operandElementType.isa<ComplexType>()) {
-      return emitOptionalError(
-          location, stringifyFftType(fftType),
-          " takes a complex tensor as input, but is given ", operandType, ".");
-    }
-  }
-  // Generate the output element type
-  Type resultElementType = operandElementType;
-  if (fftType == FftType::RFFT) {  // RFFT : R -> C
-    resultElementType = ComplexType::get(resultElementType);
-  } else if (fftType == FftType::IRFFT) {  // IRFFT : C -> R
-    resultElementType = operandElementType.cast<ComplexType>().getElementType();
-  }
-
-  // P3. Check input shape and infer return shape
-  operandType = operandType.dyn_cast<RankedTensorType>();
-  if (!operandType) {
-    inferredReturnShapes.emplace_back(resultElementType);
-    return success();
-  }
-  auto operandShape = operandType.getShape();
-  if (static_cast<int64_t>(operandShape.size()) < fftRank) {
-    return emitOptionalError(
-        location, "operand rank must not be less than fft rank of ", fftRank,
-        " for operand of type ", operandType, ".");
-  }
-
-  SmallVector<int64_t> resultShape = to_vector(operandShape);
-
-  if (fftType == FftType::RFFT) {
-    auto shapeBack = operandShape.take_back(fftRank);
-    for (auto [operandDim, fftDim] : llvm::zip(shapeBack, fftLength)) {
-      if (operandDim != fftDim) {
-        return emitOptionalError(
-            location,
-            "RFFT requires innermost dimensions match fft_length. Got: ",
-            operandShape, " but wanted ", fftLength, ".");
-      }
-    }
-    if (fftLength[fftRank - 1] != 0) {
-      resultShape[resultShape.size() - 1] = fftLength[fftRank - 1] / 2 + 1;
-    }
-  }
-  if (fftType == FftType::IRFFT) {
-    auto shapeBack = operandShape.take_back(fftRank).drop_back();
-    for (auto [operandDim, fftDim] : llvm::zip(shapeBack, fftLength)) {
-      if (operandDim != fftDim) {
-        return emitOptionalError(location,
-                                 "IRFFT requires non-final dimensions "
-                                 "match fft_length. Got: ",
-                                 operandShape, " but wanted ", fftLength,
-                                 ", and ", operandDim, " != ", fftDim, ".");
-      }
-    }
-    if ((operandShape[operandShape.size() - 1] != 0 ||
-         fftLength[fftRank - 1] != 0) &&
-        operandShape[operandShape.size() - 1] != fftLength[fftRank - 1] / 2 + 1)
-      return emitOptionalError(location,
-                               "IRFFT requires innermost dimension match "
-                               "fft_length[-1]/2+1. Got: ",
-                               operandShape, " but fft_length is ", fftLength,
-                               ".");
-    resultShape[resultShape.size() - 1] = fftLength[fftRank - 1];
-  }
-
-  inferredReturnShapes.emplace_back(resultShape, resultElementType);
-  return success();
+  return hlo::inferFftOp(location, adaptor.getOperand(),
+                         adaptor.getFftType() == FftType::RFFT,
+                         adaptor.getFftType() == FftType::IRFFT,
+                         adaptor.getFftLength(), inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -944,267 +660,6 @@ void getSliceSizeValues(DynamicGatherOp* /*dGather*/, OpBuilder& builder,
   }
 }
 
-// Verify the following properties:
-//  P1. Verify no repeat in start_index_map.
-//  P2. Verify 0 <= start_index_map[i] < rank(operand), for every i.
-//  P3. Verify 0 <= index_vector_dim <= rank(start_indices).
-//  P4. Verify size(start_index_map) == shape(start_indices)[index_vector_dim].
-//  P5. Verify offset_dims is_sorted and not repeated.
-//  P6. Verify collapsed_slice_dims is_sorted and not repeated.
-//  P7. Verify rank(operand) == size(offset_dims) + size(collapsed_slice_dims).
-//  P8. Verify slice_sizes has rank of 1.
-//  P9. Verify size(slice_sizes) == rank(operand).
-//  P10. Verify 0 <= collapsed_slice_dims[i] < size(slice_sizes) for all items.
-static LogicalResult verifyGather(
-    ShapeAdaptor operandShape, ShapeAdaptor startIndicesShape,
-    ShapeAdaptor sliceSizesShape, GatherDimensionNumbersAttr dimensionNumbers,
-    llvm::function_ref<InFlightDiagnostic()> errorEmitter) {
-  int64_t indexVectorDim = dimensionNumbers.getIndexVectorDim();
-
-  // Check startIndexMap
-  auto startIndexMap = to_vector(dimensionNumbers.getStartIndexMap());
-  // P1.
-  if (hasDuplicates(startIndexMap))
-    return errorEmitter() << "expects start_index_map to not repeat, got: ["
-                          << startIndexMap << "]";
-
-  // P2.
-  for (int64_t i = 0; i < static_cast<int64_t>(startIndexMap.size()); ++i)
-    if (startIndexMap[i] < 0 ||
-        (operandShape.hasRank() && startIndexMap[i] >= operandShape.getRank()))
-      return errorEmitter()
-             << "start_index_map[" << i << "]: " << startIndexMap[i]
-             << " is out of bounds for "
-             << "operand rank " << operandShape.getRank();
-
-  if (startIndicesShape.hasRank()) {
-    // P3.
-    // index_vector_dim == start_indices.rank implies a trailing 1 on the shape
-    // of start_indices.
-    if (indexVectorDim > startIndicesShape.getRank() || indexVectorDim < 0)
-      return errorEmitter() << "index_vector_dim " << indexVectorDim
-                            << " is out of bounds for start indices with rank "
-                            << startIndicesShape.getRank();
-
-    bool impliedTrailingDim = indexVectorDim == startIndicesShape.getRank();
-    if (impliedTrailingDim || !startIndicesShape.isDynamicDim(indexVectorDim)) {
-      int64_t effectiveDimSize;
-      if (impliedTrailingDim)
-        effectiveDimSize = 1;
-      else
-        effectiveDimSize = startIndicesShape.getDimSize(indexVectorDim);
-      // P4.
-      if (effectiveDimSize !=
-          static_cast<int64_t>(dimensionNumbers.getStartIndexMap().size()))
-        return errorEmitter() << "start_index_map size ("
-                              << dimensionNumbers.getStartIndexMap().size()
-                              << ") is not equal to size of index dimension ("
-                              << indexVectorDim << ") of start_indices ("
-                              << effectiveDimSize << ")";
-    }
-  }
-
-  // P5.
-  auto offsetDims = to_vector(dimensionNumbers.getOffsetDims());
-  if (!llvm::is_sorted(offsetDims))
-    return errorEmitter() << "expects offset_dims to be sorted, got: ["
-                          << offsetDims << "]";
-  if (hasDuplicates(offsetDims))
-    return errorEmitter() << "expects offset_dims to not repeat, got: ["
-                          << offsetDims << "]";
-
-  // P6.
-  auto collapsedSliceDims = to_vector(dimensionNumbers.getCollapsedSliceDims());
-  if (!llvm::is_sorted(collapsedSliceDims))
-    return errorEmitter() << "expects collapsed_slice_dims to be sorted, got: ["
-                          << collapsedSliceDims << "]";
-  if (hasDuplicates(collapsedSliceDims))
-    return errorEmitter()
-           << "expects collapsed_slice_dims to not repeat, got: ["
-           << collapsedSliceDims << "]";
-
-  // P7.
-  int64_t impliedOperandRank = dimensionNumbers.getOffsetDims().size() +
-                               dimensionNumbers.getCollapsedSliceDims().size();
-  if (operandShape.hasRank() && operandShape.getRank() != impliedOperandRank)
-    return errorEmitter() << "offset_dims size ("
-                          << dimensionNumbers.getOffsetDims().size()
-                          << ") plus collapse_slice_dims size ("
-                          << dimensionNumbers.getCollapsedSliceDims().size()
-                          << ") is not equal to operand rank ("
-                          << operandShape.getRank() << ")";
-
-  // P8.
-  // This should be fully expressible with type constraints, but it isn't
-  // obvious how to do that with the current infrastructure.
-  if (sliceSizesShape.hasRank() && sliceSizesShape.getRank() != 1)
-    return errorEmitter() << "slice_sizes.rank != 1";
-  if (sliceSizesShape.hasStaticShape()) {
-    int64_t sliceSize = sliceSizesShape.getNumElements();
-
-    // P9.
-    if (sliceSize != impliedOperandRank)
-      return errorEmitter() << "slice_sizes size (" << sliceSize
-                            << ") not equal to (implied) operand rank ("
-                            << impliedOperandRank << ")";
-
-    // P10.
-    for (auto dim : dimensionNumbers.getCollapsedSliceDims())
-      if (dim < 0 || dim >= sliceSize)
-        return errorEmitter() << "collapsed dimension " << dim
-                              << " is out of bounds for slice_sizes.size ("
-                              << sliceSize << ")";
-  }
-
-  return success();
-}
-
-// Verify the following properties:
-//  P1. Verifications by verifyGather().
-//  P2. Verify slice_sizes[i] <= 1 for i in collapsed_slice_dims.
-//  P3. Verify 0 <= slice_sizes[i] < shape(operand)[i], for every i.
-static LogicalResult verifyStaticGather(
-    ShapeAdaptor operandShape, ShapeAdaptor startIndicesShape,
-    DenseIntElementsAttr sliceSizes,
-    GatherDimensionNumbersAttr dimensionNumbers,
-    llvm::function_ref<InFlightDiagnostic()> errorEmitter) {
-  // P1.
-  // For some reason the getType call is necessary here
-  if (failed(verifyGather(
-          /*operandShape=*/operandShape,
-          /*startIndicesShape=*/startIndicesShape,
-          /*sliceSizesShape=*/sliceSizes.getType(), dimensionNumbers,
-          errorEmitter)))
-    return failure();
-
-  // P2.
-  for (auto dim : dimensionNumbers.getCollapsedSliceDims()) {
-    int64_t sliceDimSize = sliceSizes.getValues<int64_t>()[dim];
-    if (sliceDimSize > 1) {
-      return errorEmitter() << "slice_sizes collapsed dimension " << dim
-                            << " should <= 1 but got " << sliceDimSize;
-    }
-  }
-
-  // P3.
-  if (operandShape.hasRank()) {
-    for (const auto& it : llvm::enumerate(sliceSizes.getValues<int64_t>())) {
-      if (operandShape.isDynamicDim(it.index())) continue;
-      auto operandDimSize = operandShape.getDimSize(it.index());
-      auto sliceDimSize = it.value();
-      if (sliceDimSize < 0 || sliceDimSize > operandDimSize)
-        return errorEmitter() << "slice size (" << sliceDimSize
-                              << ") is out of bounds for operand dimension ("
-                              << operandDimSize << ") at index " << it.index();
-    }
-  }
-  return success();
-}
-
-template <typename dimTy>
-static void inferGatherShape(
-    int64_t resultRank, llvm::function_ref<dimTy(int64_t)> getStartIndicesDim,
-    llvm::function_ref<dimTy(int64_t)> getSliceDim,
-    GatherDimensionNumbersAttr dimensionNumbers,
-    SmallVectorImpl<dimTy>& shape) {
-  ArrayRef<int64_t> collapsedSliceDims =
-      dimensionNumbers.getCollapsedSliceDims();
-  int64_t indexVectorDim = dimensionNumbers.getIndexVectorDim();
-
-  // We don't necessarily know the rank of sliceSizes, but we do know that it
-  // can't be larger than the highest collapsed dimension. So go through those
-  // and populate the leading dimensions of adjustedSliceSizes. The trailing
-  // dimensions can just be adjusted by an offset.
-  const auto* maxCollapsedDimIt =
-      std::max_element(collapsedSliceDims.begin(), collapsedSliceDims.end());
-  int64_t maxCollapsedDim = -1;
-  if (maxCollapsedDimIt != collapsedSliceDims.end())
-    maxCollapsedDim = *maxCollapsedDimIt;
-
-  SmallVector<dimTy> adjustedSliceSizePrefix;
-  for (int dimIndex = 0; dimIndex <= maxCollapsedDim; ++dimIndex) {
-    if (llvm::is_contained(collapsedSliceDims, dimIndex)) continue;
-    adjustedSliceSizePrefix.push_back(getSliceDim(dimIndex));
-  }
-  auto getAdjustedSliceDim = [&](int64_t index) -> dimTy {
-    if (index < static_cast<int64_t>(adjustedSliceSizePrefix.size()))
-      return adjustedSliceSizePrefix[index];
-    return getSliceDim(index + collapsedSliceDims.size());
-  };
-
-  ArrayRef<int64_t> offsetDims = dimensionNumbers.getOffsetDims();
-
-  // Dimensions in the output that aren't offset dimensions are called batch
-  // dimensions.
-  SmallVector<int64_t> batchDims;
-  for (int dim = 0; dim < resultRank; ++dim)
-    if (!llvm::is_contained(offsetDims, dim)) batchDims.push_back(dim);
-
-  for (int i = 0; i < resultRank; ++i) {
-    const auto* offsetDimsIt =
-        std::find(offsetDims.begin(), offsetDims.end(), i);
-    if (offsetDimsIt != offsetDims.end()) {
-      auto index = std::distance(offsetDims.begin(), offsetDimsIt);
-      shape.push_back(getAdjustedSliceDim(index));
-      continue;
-    }
-    auto* batchDimsIt = std::find(batchDims.begin(), batchDims.end(), i);
-    assert(batchDimsIt != batchDims.end());
-    auto index = std::distance(batchDims.begin(), batchDimsIt);
-    // This can never run into the special case where start_indices gets
-    // implicitly expanded with a trailing 1 if
-    // index_vector_dim = start_indices.rank because then index would equal
-    // index_vector_dim, which means we'd be looking at index+1, which would be
-    // out of bounds anyway.
-    if (index >= indexVectorDim) ++index;
-    shape.push_back(getStartIndicesDim(index));
-  }
-}
-
-// Verify the following properties:
-//  P1. Verify 0 <= offset_dims[i] < output_shape_rank, for every i.
-//      (output_shape_rank = size(offset_dims) + rank(start_indices) -1)
-static LogicalResult inferGatherReturnTypeComponents(
-    ShapeAdaptor operandShape, ShapeAdaptor startIndicesShape,
-    llvm::function_ref<int64_t(int64_t)> getSliceDim,
-    GatherDimensionNumbersAttr dimensionNumbers,
-    SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes,
-    llvm::function_ref<InFlightDiagnostic()> errorEmitter) {
-  Type elementType = operandShape.getElementType();
-
-  // We need this to determine the result rank. We could still place bounds on
-  // the result rank if that was something ShapedTypeComponents could express.
-  if (!startIndicesShape.hasRank()) {
-    inferredReturnShapes.push_back(elementType);
-    return success();
-  }
-
-  ArrayRef<int64_t> offsetDims = dimensionNumbers.getOffsetDims();
-  int64_t startIndicesRank = startIndicesShape.getRank();
-  // If index_vector_dim == start_indices.rank, then an implicit trailing 1 is
-  // appended to start_indices shape.
-  if (dimensionNumbers.getIndexVectorDim() == startIndicesRank)
-    ++startIndicesRank;
-  int64_t resultRank = offsetDims.size() + startIndicesRank - 1;
-  // P1.
-  for (int64_t i = 0; i < static_cast<int64_t>(offsetDims.size()); ++i)
-    if (offsetDims[i] < 0 || offsetDims[i] >= resultRank)
-      return errorEmitter() << "offset_dims[" << i << "]: " << offsetDims[i]
-                            << " is out of bounds for "
-                            << "implied result rank " << resultRank;
-
-  auto getStartIndicesDim = [&](int64_t index) {
-    return startIndicesShape.getDimSize(index);
-  };
-
-  SmallVector<int64_t> shape;
-  inferGatherShape<int64_t>(resultRank, getStartIndicesDim, getSliceDim,
-                            dimensionNumbers, shape);
-
-  inferredReturnShapes.emplace_back(shape, elementType);
-  return success();
-}
-
 template <typename Op>
 LogicalResult reifyGatherShape(Op* op, OpBuilder& builder, ValueRange operands,
                                SmallVectorImpl<Value>& reifiedReturnShapes) {
@@ -1218,7 +673,7 @@ LogicalResult reifyGatherShape(Op* op, OpBuilder& builder, ValueRange operands,
 
   Location loc = op->getLoc();
   int resultRank = resultTy.getRank();
-  Type shapeElTy = startIndices.getType().cast<ShapedType>().getElementType();
+  Type shapeElTy = builder.getIndexType();
   auto toShapeElType = [&](Value v) {
     return maybeCastTo(builder, loc, v, shapeElTy);
   };
@@ -1236,8 +691,12 @@ LogicalResult reifyGatherShape(Op* op, OpBuilder& builder, ValueRange operands,
   auto getSliceDim = [&sliceSizes](int64_t index) -> Value {
     return sliceSizes[index];
   };
-  inferGatherShape<Value>(resultRank, getStartIndicesDim, getSliceDim,
-                          op->getDimensionNumbers(), shapeValues);
+  hlo::reifyGatherDimSizes(resultRank, getStartIndicesDim, getSliceDim,
+                           op->getDimensionNumbers().getOffsetDims(),
+                           op->getDimensionNumbers().getCollapsedSliceDims(),
+                           op->getDimensionNumbers().getStartIndexMap(),
+                           op->getDimensionNumbers().getIndexVectorDim(),
+                           shapeValues);
 
   Value outputShape = builder.create<tensor::FromElementsOp>(
       loc, RankedTensorType::get({resultRank}, shapeElTy), shapeValues);
@@ -1254,42 +713,18 @@ LogicalResult GatherOp::reifyReturnTypeShapes(
   return reifyGatherShape(this, builder, operands, reifiedReturnShapes);
 }
 
-// The following properties are already enforced by the ODS:
-//  P0. Verify the start_indices has element type of integer.
-// Verify the following properties:
-//  Verifications by verifyStaticGather() and verifyGather() inside it.
-//  Verifications by inferGatherReturnTypeComponents.
 LogicalResult GatherOp::inferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  Location loc = location.value_or(UnknownLoc::get(context));
-  auto errorEmitter = [&loc]() {
-    return mlir::emitError(loc)
-           << "'" << GatherOp::getOperationName() << "' op ";
-  };
   GatherOp::Adaptor adaptor(operands, attributes, regions);
-  if (failed(adaptor.verify(loc))) return failure();
-
-  // We want the ShapeAdaptors, so can't route via the adaptor :-/
-  ShapeAdaptor operandShape = operands.getShape(0);
-  ShapeAdaptor startIndicesShape = operands.getShape(1);
-  GatherDimensionNumbersAttr dimensionNumbers = adaptor.getDimensionNumbers();
-  DenseIntElementsAttr sliceSizesAttr = adaptor.getSliceSizes();
-
-  if (failed(verifyStaticGather(/*operandShape=*/operandShape,
-                                /*startIndicesShape=*/startIndicesShape,
-                                /*sliceSizes=*/sliceSizesAttr, dimensionNumbers,
-                                errorEmitter)))
-    return failure();
-
-  auto getSliceDim = [&sliceSizesAttr](int64_t index) -> int64_t {
-    return sliceSizesAttr.getValues<int64_t>()[index];
-  };
-
-  return inferGatherReturnTypeComponents(operandShape, startIndicesShape,
-                                         getSliceDim, dimensionNumbers,
-                                         inferredReturnShapes, errorEmitter);
+  return hlo::inferGatherOp(
+      location, adaptor.getOperand(), adaptor.getStartIndices(),
+      adaptor.getDimensionNumbers().getOffsetDims(),
+      adaptor.getDimensionNumbers().getCollapsedSliceDims(),
+      adaptor.getDimensionNumbers().getStartIndexMap(),
+      adaptor.getDimensionNumbers().getIndexVectorDim(),
+      adaptor.getSliceSizes(), inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1303,59 +738,40 @@ LogicalResult DynamicGatherOp::reifyReturnTypeShapes(
 }
 
 LogicalResult DynamicGatherOp::inferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  // This can get called before other op verify methods, so we have to do a
-  // bunch of verification up front. With a better story for ordering and/or
-  // multi-phase op verification, this should hopefully all go away.
-  Location loc = location.value_or(UnknownLoc::get(context));
-  auto errorEmitter = [&loc]() {
-    return mlir::emitError(loc)
-           << "'" << DynamicGatherOp::getOperationName() << "' op ";
-  };
   DynamicGatherOp::Adaptor adaptor(operands, attributes, regions);
-  if (failed(adaptor.verify(loc))) return failure();
-
-  // We want the ShapeAdaptors, so can't route via the adaptor :-/
-  ShapeAdaptor operandShape = operands.getShape(0);
-  ShapeAdaptor startIndicesShape = operands.getShape(1);
-  ShapeAdaptor sliceSizesShape = operands.getShape(2);
-  GatherDimensionNumbersAttr dimensionNumbers = adaptor.getDimensionNumbers();
-
-  if (failed(verifyGather(/*operandShape=*/operandShape,
-                          /*startIndicesShape=*/startIndicesShape,
-                          /*sliceSizesShape=*/sliceSizesShape, dimensionNumbers,
-                          errorEmitter)))
-    return failure();
-
-  auto getSliceDim = [](int64_t index) { return ShapedType::kDynamic; };
-  return inferGatherReturnTypeComponents(operandShape, startIndicesShape,
-                                         getSliceDim, dimensionNumbers,
-                                         inferredReturnShapes, errorEmitter);
+  return hlo::inferDynamicGatherOp(
+      location, adaptor.getOperand(), adaptor.getStartIndices(),
+      adaptor.getSliceSizes(), adaptor.getDimensionNumbers().getOffsetDims(),
+      adaptor.getDimensionNumbers().getCollapsedSliceDims(),
+      adaptor.getDimensionNumbers().getStartIndexMap(),
+      adaptor.getDimensionNumbers().getIndexVectorDim(), inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
 // GetDimensionSizeOp
 //===----------------------------------------------------------------------===//
-//
-LogicalResult GetDimensionSizeOp::verify() { return verifyDimAttr(*this); }
+
+LogicalResult GetDimensionSizeOp::verify() {
+  auto operandTy = getOperand().getType().cast<ShapedType>();
+  int64_t dim = getDimension();
+  return verifyDimInBounds(getLoc(), operandTy, dim);
+}
+
+LogicalResult GetDimensionSizeOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange,
+    DictionaryAttr, RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
+  return hlo::inferGetDimensionSizeOp(context, location, inferredReturnTypes);
+}
 
 //===----------------------------------------------------------------------===//
 // IotaOp
 //===----------------------------------------------------------------------===//
 
 LogicalResult IotaOp::verify() {
-  auto shape = getType().cast<ShapedType>();
-  if (!shape.hasRank()) return success();
-
-  if (shape.getRank() == 0) return emitOpError() << "does not support scalars.";
-
-  auto iotaDimension = static_cast<int64_t>(this->getIotaDimension());
-  if (iotaDimension >= shape.getRank() || iotaDimension < 0)
-    return emitOpError()
-           << "iota dimension cannot go beyond the output rank or be negative.";
-  return success();
+  return hlo::verifyIotaOp(getLoc(), getIotaDimension(), getResult());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1383,27 +799,14 @@ LogicalResult DynamicIotaOp::reifyReturnTypeShapes(
 // DynamicUpdateSliceOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult DynamicUpdateSliceOp::verify() {
-  OperandRange indices = getStartIndices();
-  if (indices.size() <= 1) return success();
-
-  // Note: start_indices is constrained to Variadic<HLO_ScalarIntTensor>, so it
-  // is OK to cast indices to ShapedType here.
-  auto idxTensor = indices.take_front().front().getType().cast<ShapedType>();
-  Type firstElemTy = idxTensor.getElementType();
-  Type elemTy;
-
-  for (auto idx : llvm::drop_begin(indices, 1)) {
-    idxTensor = idx.getType().cast<ShapedType>();
-    elemTy = idxTensor.getElementType();
-
-    if (firstElemTy != elemTy) {
-      return emitOpError() << "start indices must have same element type "
-                              "(encountered mismatch: "
-                           << firstElemTy << " vs " << elemTy << ")";
-    }
-  }
-  return success();
+LogicalResult DynamicUpdateSliceOp::inferReturnTypeComponents(
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
+  DynamicUpdateSliceOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferDynamicUpdateSliceOp(
+      location, adaptor.getOperand(), adaptor.getUpdate(),
+      adaptor.getStartIndices(), inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1411,447 +814,40 @@ LogicalResult DynamicUpdateSliceOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult AbsOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands, DictionaryAttr,
-    RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  auto operandTy = (*operands.begin()).getType().cast<ShapedType>();
-  Type elementTy = operandTy.getElementType();
-  if (auto complexTy = elementTy.dyn_cast<ComplexType>()) {
-    elementTy = complexTy.getElementType();
-  }
-
-  Type resultTy;
-  if (auto rankedOperandTy = operandTy.dyn_cast<RankedTensorType>()) {
-    resultTy = RankedTensorType::get(operandTy.getShape(), elementTy,
-                                     rankedOperandTy.getEncoding());
-  } else if (operandTy.hasRank()) {
-    resultTy = RankedTensorType::get(operandTy.getShape(), elementTy);
-  } else {
-    resultTy = UnrankedTensorType::get(elementTy);
-  }
-  inferredReturnTypes.push_back(resultTy);
-  return success();
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  AbsOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferAbsOp(location, adaptor.getOperand(), inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
 // CollectivePermuteOp
 //===----------------------------------------------------------------------===//
 
-// Verifies the source target pairs attached to collective permute.
-LogicalResult verifyCollectivePermuteSourceTargetPairs(
-    Operation* op, DenseIntElementsAttr attr) {
-  auto type = attr.getType().dyn_cast<RankedTensorType>();
-  if (type.getRank() != 2)
-    return op->emitError() << "expect source_target_pairs attribute to be of "
-                              "rank 2, but got rank "
-                           << type.getRank();
-  if (type.getShape()[1] != 2)
-    return op->emitError()
-           << "expect source_target_pairs attribute of shape (N, 2), but got ("
-           << type.getShape() << ")";
-  // Check source target pairs for duplicate sources or targets.
-  llvm::DenseSet<int64_t> sources;
-  llvm::DenseSet<int64_t> targets;
-  for (auto i = attr.begin(), e = attr.end(); i != e; ++i) {
-    auto val = (*i).getSExtValue();
-    if (i.getIndex() % 2 == 0) {
-      bool isUnique = sources.insert(val).second;
-      if (!isUnique) return op->emitError() << "duplicate sources not allowed.";
-    } else {
-      bool isUnique = targets.insert(val).second;
-      if (!isUnique) return op->emitError() << "duplicate targets not allowed.";
-    }
-  }
-  return success();
-}
-
 LogicalResult CollectivePermuteOp::verify() {
-  return verifyCollectivePermuteSourceTargetPairs(*this,
-                                                  getSourceTargetPairs());
+  return hlo::verifyCollectivePermuteOp(getLoc(), getSourceTargetPairs());
 }
 
 //===----------------------------------------------------------------------===//
 // ConvolutionOp
 //===----------------------------------------------------------------------===//
 
-namespace {
-// Checks:
-//  P1. Same sizes for input, kernel and output spatialDims.
-//  P2. Spatial and non-spatial dimentions (for input,kernel, &output) should
-//      be unique and in range [0, num_dims), where num_dims = rank of input
-//      (lhs/rhs) tensors.
-//
-//  Note that the spatial + non-spatial dimensions may not cover all the
-//  dimensions in the range [0,num) because of the presence of 'unknown'
-//  dimensions (ref. `printConvolutionDimensions()`)
-LogicalResult isSpatialDimensionsValid(
-    Value lhs,
-    // clang-format off
-    int64_t inputBatchDimension,
-    int64_t inputFeatureDimension,
-    ArrayRef<int64_t> inputSpatialDimensions,
-    int64_t kernelInputFeatureDimension,
-    int64_t kernelOutputFeatureDimension,
-    ArrayRef<int64_t> kernelSpatialDimensions,
-    int64_t outputBatchDimension,
-    int64_t outputFeatureDimension,
-    ArrayRef<int64_t> outputSpatialDimensions,
-    // clang-format on
-    Optional<Location> location) {
-  uint64_t spatialDimNum = inputSpatialDimensions.size();
-  // P1.
-  if ((spatialDimNum != kernelSpatialDimensions.size()) ||
-      (spatialDimNum != outputSpatialDimensions.size()))
-    return emitOptionalError(location,
-                             "expects the same size for input, kernel "
-                             "and output spatial-dimensions, but got ",
-                             spatialDimNum, ", ",
-                             kernelSpatialDimensions.size(), ", and ",
-                             outputSpatialDimensions.size(), " resp.");
-
-  // P2.
-  SmallVector<int64_t> inputDimNums(spatialDimNum + 2);
-  inputDimNums[0] = inputBatchDimension;
-  inputDimNums[1] = inputFeatureDimension;
-  std::copy(inputSpatialDimensions.begin(), inputSpatialDimensions.end(),
-            inputDimNums.begin() + 2);
-
-  SmallVector<int64_t> windowDimNums(spatialDimNum + 2);
-  windowDimNums[0] = kernelInputFeatureDimension;
-  windowDimNums[1] = kernelOutputFeatureDimension;
-  std::copy(kernelSpatialDimensions.begin(), kernelSpatialDimensions.end(),
-            windowDimNums.begin() + 2);
-
-  SmallVector<int64_t> OutputDimNums(spatialDimNum + 2);
-  OutputDimNums[0] = outputBatchDimension;
-  OutputDimNums[1] = outputFeatureDimension;
-  std::copy(outputSpatialDimensions.begin(), outputSpatialDimensions.end(),
-            OutputDimNums.begin() + 2);
-
-  auto numDims = lhs.getType().cast<RankedTensorType>().getRank();
-  const auto inRange = [numDims](int64_t i) { return 0 <= i && i < numDims; };
-
-  if (!llvm::all_of(inputDimNums, inRange) ||
-      !llvm::all_of(windowDimNums, inRange) ||
-      !llvm::all_of(OutputDimNums, inRange))
-    return emitOptionalError(location,
-                             "expects input, kernel, and output "
-                             "dimension-numbers to be in-range [0, ",
-                             numDims, ").");
-
-  if (hasDuplicates(inputDimNums))
-    return emitOptionalError(
-        location, "expects input dimension-numbers to be unique, got {",
-        inputDimNums, "}.");
-
-  if (hasDuplicates(windowDimNums))
-    return emitOptionalError(
-        location, "expects kernel dimension-numbers to be unique, got {",
-        windowDimNums, "}.");
-
-  if (hasDuplicates(OutputDimNums))
-    return emitOptionalError(
-        location, "expects output dimension-numbers to be unique, got {",
-        OutputDimNums, "}.");
-
-  return success();
-}
-
-// Verifies the following properties:
-//  P1. The input, kernel, and output spatial-dimentions are valid.
-//  P2. Given,
-//          input-dimensions: b * input-spatial-dims * f
-//          kernel-dimensions: kernel-spatial-dims * i * o
-//          output-dimensions: b' * out-spatial-dims * f'
-//            where b = input-batch-dims
-//            where f = input-feature-dims
-//            where i = kernel-input-feature-dims
-//            where o = kernel-output-feature-dims
-//            where b' = output-batch-dims
-//            where f' = output-feature-dims
-//      Check the following properties w.r.t feature_group_count (fgc) and
-//      batch_group_count (bgc).
-//        fgc > 0, bgc > 1 and !(fgc > 1 && bgc > 1)
-//        b % bgc == 0
-//        f % fgc == 0 and i = f / fgc
-//        o (or f') % bgc == 0 and o (or f') % fgc == 0
-LogicalResult verifyConvolutionAttributes(
-    // clang-format off
-    Value lhs, Value rhs,
-    int64_t inputBatchDimension,
-    int64_t inputFeatureDimension,
-    ArrayRef<int64_t> inputSpatialDimensions,
-    int64_t kernelInputFeatureDimension,
-    int64_t kernelOutputFeatureDimension,
-    ArrayRef<int64_t> kernelSpatialDimensions,
-    int64_t outputBatchDimension,
-    int64_t outputFeatureDimension,
-    ArrayRef<int64_t> outputSpatialDimensions,
-    int64_t featureGroupCount,
-    int64_t batchGroupCount,
-    // clang-format on
-    Optional<Location> location) {
-  // P1.
-  if (failed(isSpatialDimensionsValid(
-          lhs,
-          // clang-format off
-          inputBatchDimension,
-          inputFeatureDimension,
-          inputSpatialDimensions,
-          kernelInputFeatureDimension,
-          kernelOutputFeatureDimension,
-          kernelSpatialDimensions,
-          outputBatchDimension,
-          outputFeatureDimension,
-          outputSpatialDimensions,
-          location
-          // clang-format on
-          )))
-    return failure();
-
-  // P2.
-  if (featureGroupCount <= 0)
-    return emitOptionalError(
-        location, "expects feature_group_count to be a positive number, got ",
-        featureGroupCount, ".");
-
-  if (batchGroupCount <= 0)
-    return emitOptionalError(
-        location, "expects batch_group_count to be a positive number, got ",
-        batchGroupCount, ".");
-
-  if (batchGroupCount > 1 && featureGroupCount > 1)
-    return emitOptionalError(
-        location,
-        "expects batch_group_count and feature_group_count not to be both "
-        "greater than 1. Got ",
-        batchGroupCount, " and ", featureGroupCount, " resp.");
-
-  auto lhsType = lhs.getType().cast<RankedTensorType>();
-  const int64_t inputFeatures = lhsType.getShape()[inputFeatureDimension];
-  const int64_t inputBatch = lhsType.getShape()[inputBatchDimension];
-
-  auto rhsType = rhs.getType().cast<RankedTensorType>();
-  const int64_t kernelInputFeatures =
-      rhsType.getShape()[kernelInputFeatureDimension];
-  const int64_t kernelOutputFeatures =
-      rhsType.getShape()[kernelOutputFeatureDimension];
-
-  if (!hlo::isDynamicDimSize(kernelOutputFeatures)) {
-    if (kernelOutputFeatures % batchGroupCount != 0)
-      return emitOptionalError(
-          location, "expects output feature dimension size (",
-          kernelOutputFeatures,
-          ") to be a multiple of batch_group_count. Got batch_group_count = ",
-          batchGroupCount, ".");
-
-    if (kernelOutputFeatures % featureGroupCount != 0)
-      return emitOptionalError(location,
-                               "expects kernel output feature dimension (",
-                               kernelOutputFeatures,
-                               ") to be divisible by feature_group_count. For "
-                               "feature_group_count = ",
-                               featureGroupCount, ".");
-  }
-
-  if (!hlo::isDynamicDimSize(inputFeatures)) {
-    if (inputFeatures % featureGroupCount != 0)
-      return emitOptionalError(location, "expects input feature dimension (",
-                               inputFeatures,
-                               ") to be a multiple of feature_group_count. Got "
-                               "feature_group_count = ",
-                               featureGroupCount, ".");
-
-    if (!hlo::isDynamicDimSize(kernelInputFeatures) &&
-        inputFeatures / featureGroupCount != kernelInputFeatures)
-      return emitOptionalError(
-          location, "expects input feature dimension (", inputFeatures,
-          ") / "
-          "feature_group_count = kernel input feature dimension (",
-          kernelInputFeatures,
-          "). Got feature_group_count = ", featureGroupCount, ".");
-  }
-
-  if (!hlo::isDynamicDimSize(inputBatch) && inputBatch % batchGroupCount != 0)
-    return emitOptionalError(location, "expects input batch dimension (",
-                             inputBatch,
-                             ") to be divisible by "
-                             "batch_group_count. Got batch_group_count = ",
-                             batchGroupCount, ".");
-
-  return success();
-}
-
-// Infer the return-shape of ConvolutionOp.
-// Precondition:
-//  1. Input args to ConvolutionOp 'op' are RankedTypes.
-//  2. rank-of(input-type) == rank-of(output-type)
-SmallVector<int64_t> inferConvolutionOpReturnShape(
-    // clang-format off
-    Value lhs, Value rhs,
-    int64_t inputBatchDimension,
-    ArrayRef<int64_t> inputSpatialDimensions,
-    int64_t kernelOutputFeatureDimension,
-    int64_t outputBatchDimension,
-    int64_t outputFeatureDimension,
-    ArrayRef<int64_t> outputSpatialDimensions,
-    int64_t batchGroupCount,
-    // clang-format on
-    const ArrayRef<hlo::WindowDimension> window) {
-  auto lhsType = lhs.getType().cast<RankedTensorType>();
-  SmallVector<int64_t> outputDimensions(lhsType.getShape().size(),
-                                        ShapedType::kDynamic);
-
-  // Infer the output spatial dimensions.
-  auto numSpatialDims = inputSpatialDimensions.size();
-  SmallVector<int64_t> inputSpatialDimVals(numSpatialDims);
-  for (int64_t i = 0; i < static_cast<int64_t>(numSpatialDims); ++i)
-    inputSpatialDimVals[i] = lhsType.getShape()[inputSpatialDimensions[i]];
-
-  auto windowOutputShape =
-      hlo::inferWindowOutputShape(inputSpatialDimVals, window);
-
-  for (int64_t i = 0; i < static_cast<int64_t>(window.size()); ++i)
-    outputDimensions[outputSpatialDimensions[i]] = windowOutputShape[i];
-
-  // Infer the output-batch-dimension and output-feature-dimension.
-  auto rhsType = rhs.getType().cast<RankedTensorType>();
-  const int64_t inputBatch = lhsType.getShape()[inputBatchDimension];
-  const int64_t kernelOutputFeatures =
-      rhsType.getShape()[kernelOutputFeatureDimension];
-
-  outputDimensions[outputBatchDimension] = hlo::isDynamicDimSize(inputBatch)
-                                               ? ShapedType::kDynamic
-                                               : inputBatch / batchGroupCount;
-  outputDimensions[outputFeatureDimension] = kernelOutputFeatures;
-
-  return outputDimensions;
-}
-
-}  // namespace
-
-/*
- * We intend to verify the following properties
- *  P1. Verify the input, kernel types.
- *  P2. Verify the convolution atributes.
- *  P3. Verify and collect the window atributes.
- *  P4. Verify the return shape.
- *      TODO(b/232574102): Verify the element-type of return-value.
- */
-LogicalResult ConvolutionOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
-    SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  ConvolutionOp::Adaptor adaptor(operands, attributes, regions);
-
-  Value lhs = adaptor.getLhs();
-  Value rhs = adaptor.getRhs();
-  Optional<DenseIntElementsAttr> windowStrides = adaptor.getWindowStrides();
-  Optional<DenseIntElementsAttr> padding = adaptor.getPadding();
-  Optional<DenseIntElementsAttr> lhsDilation = adaptor.getLhsDilation();
-  Optional<DenseIntElementsAttr> rhsDilation = adaptor.getRhsDilation();
-
-  int64_t inputBatchDimension =
-      adaptor.getDimensionNumbers().getInputBatchDimension();
-  int64_t inputFeatureDimension =
-      adaptor.getDimensionNumbers().getInputFeatureDimension();
-  ArrayRef<int64_t> inputSpatialDimensions =
-      adaptor.getDimensionNumbers().getInputSpatialDimensions();
-  int64_t kernelInputFeatureDimension =
-      adaptor.getDimensionNumbers().getKernelInputFeatureDimension();
-  int64_t kernelOutputFeatureDimension =
-      adaptor.getDimensionNumbers().getKernelOutputFeatureDimension();
-  ArrayRef<int64_t> kernelSpatialDimensions =
-      adaptor.getDimensionNumbers().getKernelSpatialDimensions();
-  int64_t outputBatchDimension =
-      adaptor.getDimensionNumbers().getOutputBatchDimension();
-  int64_t outputFeatureDimension =
-      adaptor.getDimensionNumbers().getOutputFeatureDimension();
-  ArrayRef<int64_t> outputSpatialDimensions =
-      adaptor.getDimensionNumbers().getOutputSpatialDimensions();
-
-  int64_t featureGroupCount = adaptor.getFeatureGroupCount();
-  int64_t batchGroupCount = adaptor.getBatchGroupCount();
-
-  auto lhsType = lhs.getType().dyn_cast<RankedTensorType>();
-  auto rhsType = rhs.getType().dyn_cast<RankedTensorType>();
-
-  if (!lhsType || !rhsType) {
-    inferredReturnShapes.emplace_back(lhsType.getElementType());
-    return success();
-  }
-
-  // P1.
-  int numDims = lhsType.getRank();
-  if (numDims != rhsType.getRank())
-    return emitOptionalError(location,
-                             "expects convolution arguments to have same "
-                             "number of dimensions. Got: ",
-                             lhsType, " and ", rhsType, ".");
-
-  if (numDims < 2)
-    return emitOptionalError(
-        location,
-        "expects convolution arguments to have >= 2 dimensions. Got: ", lhsType,
-        " and ", rhsType, ".");
-
-  // P2.
-  if (failed(verifyConvolutionAttributes(
-          lhs, rhs,
-          // clang-format off
-          inputBatchDimension,
-          inputFeatureDimension,
-          inputSpatialDimensions,
-          kernelInputFeatureDimension,
-          kernelOutputFeatureDimension,
-          kernelSpatialDimensions,
-          outputBatchDimension,
-          outputFeatureDimension,
-          outputSpatialDimensions,
-          featureGroupCount,
-          batchGroupCount,
-          // clang-format on
-          location)))
-    return failure();
-
-  if ((size_t)numDims != inputSpatialDimensions.size() + 2)
-    return emitOptionalError(location, "expects convolution arguments to have ",
-                             inputSpatialDimensions.size() + 2,
-                             " dimensions. Got: ", numDims);
-
-  // P3.
-  SmallVector<int64_t> windowDimensions(kernelSpatialDimensions.size());
-  for (size_t i = 0; i < windowDimensions.size(); i++)
-    windowDimensions[i] = rhsType.getShape()[kernelSpatialDimensions[i]];
-
-  auto paddingOrErr = hlo::convertPaddingAttribute(padding, location);
-  if (failed(paddingOrErr)) return failure();
-
-  // TODO: add missing tests for ConvolutionOp.
-  auto windowStridesOrErr =
-      hlo::convert1DAttribute(windowStrides, location, "window_strides");
-  if (failed(windowStridesOrErr)) return failure();
-  auto lhsDilationOrErr =
-      hlo::convert1DAttribute(lhsDilation, location, "lhs_dilation");
-  if (failed(lhsDilationOrErr)) return failure();
-  auto rhsDilationOrErr =
-      hlo::convert1DAttribute(rhsDilation, location, "rhs_dilation");
-  if (failed(rhsDilationOrErr)) return failure();
-  auto windowOrErr = hlo::verifyWindowAttributesAndInferWindowDimensions(
-      windowDimensions, *windowStridesOrErr, *paddingOrErr, *lhsDilationOrErr,
-      *rhsDilationOrErr, location);
-  if (failed(windowOrErr)) return failure();
-
-  // P4.
-  auto expectedReturnShape = inferConvolutionOpReturnShape(
-      lhs, rhs, inputBatchDimension, inputSpatialDimensions,
-      kernelOutputFeatureDimension, outputBatchDimension,
-      outputFeatureDimension, outputSpatialDimensions, batchGroupCount,
-      *windowOrErr);
-
-  inferredReturnShapes.emplace_back(expectedReturnShape,
-                                    lhsType.getElementType());
-
-  return success();
+LogicalResult ConvolutionOp::verify() {
+  return hlo::verifyConvolutionOp(
+      getLoc(), getLhs(), getRhs(), getWindowStrides(), getPadding(),
+      getLhsDilation(), getRhsDilation(), getWindowReversal(),
+      getDimensionNumbers().getInputBatchDimension(),
+      getDimensionNumbers().getInputFeatureDimension(),
+      getDimensionNumbers().getInputSpatialDimensions(),
+      getDimensionNumbers().getKernelInputFeatureDimension(),
+      getDimensionNumbers().getKernelOutputFeatureDimension(),
+      getDimensionNumbers().getKernelSpatialDimensions(),
+      getDimensionNumbers().getOutputBatchDimension(),
+      getDimensionNumbers().getOutputFeatureDimension(),
+      getDimensionNumbers().getOutputSpatialDimensions(),
+      getFeatureGroupCount(), getBatchGroupCount(), getPrecisionConfig(),
+      getResult());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1871,111 +867,28 @@ void ConvertOp::build(OpBuilder& builder, OperationState& result, Value operand,
 }
 
 //===----------------------------------------------------------------------===//
-// GetTupleElementOp
-//===----------------------------------------------------------------------===//
-
-LogicalResult GetTupleElementOp::verify() {
-  auto indexVal = getIndex();
-  auto operandType = getOperand().getType().cast<TupleType>();
-  if (indexVal >= operandType.size()) {
-    return emitOpError(
-        llvm::formatv("index {0} is out of bounds of operand with size {1}",
-                      indexVal, operandType.size()));
-  }
-
-  auto expectedType = operandType.getType(indexVal);
-  if (getType() != expectedType) {
-    return emitOpError(llvm::formatv("has return type {0}, but expected {1}",
-                                     getType(), expectedType));
-  }
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// TupleOp
-//===----------------------------------------------------------------------===//
-
-LogicalResult TupleOp::verify() {
-  auto opType = getType().dyn_cast<TupleType>();
-  if (!opType) return emitOpError("tuple op with non-tuple result");
-  if (getNumOperands() != opType.size())
-    return emitOpError(
-        "number of operands to tuple expected to match number of types in "
-        "resultant tuple type");
-  for (const auto& it :
-       llvm::enumerate(llvm::zip_first(getOperandTypes(), opType.getTypes()))) {
-    if (std::get<0>(it.value()) != std::get<1>(it.value()))
-      return emitOpError("has return type mismatch at ")
-             << it.index() << "th value (" << std::get<0>(it.value())
-             << " != " << std::get<1>(it.value()) << ")";
-  }
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
 // AllToAllOp
 //===----------------------------------------------------------------------===//
 
 LogicalResult AllToAllOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   AllToAllOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferAllToAllOp(
+      location, adaptor.getOperand(), adaptor.getSplitDimension(),
+      adaptor.getConcatDimension(), adaptor.getSplitCount(),
+      adaptor.getReplicaGroups(), inferredReturnShapes);
+}
 
-  int64_t splitCount = adaptor.getSplitCount();
-  if (splitCount <= 0)
-    return emitOptionalError(location, "AllToAll split_count must be > 0");
-
-  if (failed(hlo::verifyReplicaGroups(location, adaptor.getReplicaGroups(),
-                                      /*allGroupsMustHaveSameSize=*/true,
-                                      splitCount)))
-    return failure();
-
-  int64_t splitDimension = static_cast<int64_t>(adaptor.getSplitDimension());
-  if (splitDimension < 0)
-    return emitOptionalError(location,
-                             "AllToAll split_dimension cannot be negative");
-
-  int64_t concatDimension = static_cast<int64_t>(adaptor.getConcatDimension());
-  if (concatDimension < 0)
-    return emitOptionalError(location,
-                             "AllToAll concat_dimension cannot be negative");
-
-  Type operandType = adaptor.getOperand().getType();
-  RankedTensorType operandRankedType = operandType.dyn_cast<RankedTensorType>();
-  if (!operandRankedType) {
-    inferredReturnShapes.emplace_back(
-        operandType.cast<TensorType>().getElementType());
-    return success();
-  }
-
-  int64_t inputRank = operandRankedType.getRank();
-  if (splitDimension >= inputRank) {
-    return emitOptionalError(location, "AllToAll split_dimension ",
-                             splitDimension,
-                             " is out-of-bounds for input rank ", inputRank);
-  }
-  if (concatDimension >= inputRank) {
-    return emitOptionalError(location, "AllToAll concat_dimension ",
-                             concatDimension,
-                             " is out-of-bounds for input rank ", inputRank);
-  }
-
-  // If operand is ranked, size of split dimension should be a multiple of split
-  // count.
-  auto splitDimSize = operandRankedType.getDimSize(splitDimension);
-  if (splitDimSize % splitCount != 0) {
-    return emitOptionalError(
-        location, "split dimension has size ", splitDimSize,
-        ", expected to be a multiple of split_count ", splitCount);
-  }
-  SmallVector<int64_t> resultShape(operandRankedType.getShape().begin(),
-                                   operandRankedType.getShape().end());
-  resultShape[splitDimension] /= splitCount;
-  resultShape[concatDimension] *= splitCount;
-  inferredReturnShapes.emplace_back(resultShape,
-                                    operandRankedType.getElementType());
-  return success();
+void AllToAllOp::build(OpBuilder& odsBuilder, OperationState& odsState,
+                       Type resultType, Value operand,
+                       IntegerAttr splitDimension, IntegerAttr concatDimension,
+                       IntegerAttr splitCount,
+                       DenseIntElementsAttr replicaGroups) {
+  AllToAllOp::build(odsBuilder, odsState, resultType, operand, splitDimension,
+                    concatDimension, splitCount, replicaGroups,
+                    /*channel_handle=*/nullptr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1983,56 +896,18 @@ LogicalResult AllToAllOp::inferReturnTypeComponents(
 //===----------------------------------------------------------------------===//
 
 LogicalResult AllGatherOp::verify() {
-  if (failed(hlo::verifyReplicaGroups(getLoc(), getReplicaGroups(),
-                                      /*allGroupsMustHaveSameSize=*/true,
-                                      /*expectedGroupSize*/ llvm::None)))
-    return failure();
+  return hlo::verifyAllGatherOp(getLoc(), getOperand(), getAllGatherDim(),
+                                getReplicaGroups(), getUseGlobalDeviceIds(),
+                                getResult());
+}
 
-  auto operandType = getOperand().getType().dyn_cast<RankedTensorType>();
-  auto resultType = getType().dyn_cast<RankedTensorType>();
-  int64_t allGatherDimIndex = getAllGatherDim();
+//===----------------------------------------------------------------------===//
+// AllReduceOp
+//===----------------------------------------------------------------------===//
 
-  if (allGatherDimIndex < 0)
-    return emitOpError() << "all_gather_dim cannot be negative";
-
-  if (operandType) {
-    if (allGatherDimIndex >= operandType.getRank())
-      return emitOpError() << "all_gather_dim must be a valid index of operand";
-
-    if (operandType.getDimSize(allGatherDimIndex) == 0)
-      return emitOpError()
-             << "dimension size of operand at 'all_gather_dim' cannot be zero";
-  }
-
-  if (operandType && resultType) {
-    if (resultType.getRank() != operandType.getRank())
-      return emitOpError() << "operand and return must have the same rank";
-
-    for (int64_t i = 0; i < operandType.getRank(); i++) {
-      if (i == allGatherDimIndex || operandType.isDynamicDim(i) ||
-          resultType.isDynamicDim(i))
-        continue;
-
-      if (resultType.getDimSize(i) != operandType.getDimSize(i))
-        return emitOpError() << "operand and result should have the same shape "
-                                "except for the "
-                                "dimension size at 'all_gather_dim'";
-    }
-
-    if (operandType.isDynamicDim(allGatherDimIndex) ||
-        resultType.isDynamicDim(allGatherDimIndex))
-      return success();
-
-    if ((resultType.getDimSize(allGatherDimIndex) %
-         operandType.getDimSize(allGatherDimIndex)) != 0)
-      return emitOpError()
-             << "result gather dimension has size "
-             << resultType.getDimSize(allGatherDimIndex)
-             << ", expected to be a multiple of operand gather dimension size "
-             << operandType.getDimSize(allGatherDimIndex);
-  }
-
-  return success();
+LogicalResult AllReduceOp::verify() {
+  return hlo::verifyAllReduceOp(getLoc(), getOperand(), getReplicaGroups(),
+                                getUseGlobalDeviceIds(), getComputation());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2040,13 +915,14 @@ LogicalResult AllGatherOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult BatchNormGradOp::inferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   BatchNormGradOp::Adaptor adaptor(operands, attributes, regions);
   return hlo::inferBatchNormGradOp(
-      location, adaptor.getOperand(), adaptor.getScale(),
-      adaptor.getFeatureIndex(), inferredReturnShapes);
+      location, adaptor.getOperand(), adaptor.getScale(), adaptor.getMean(),
+      adaptor.getVariance(), adaptor.getGradOutput(), adaptor.getFeatureIndex(),
+      inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2054,12 +930,12 @@ LogicalResult BatchNormGradOp::inferReturnTypeComponents(
 //===----------------------------------------------------------------------===//
 
 LogicalResult BatchNormTrainingOp::inferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   BatchNormTrainingOp::Adaptor adaptor(operands, attributes, regions);
   return hlo::inferBatchNormTrainingOp(
-      location, adaptor.getOperand(), adaptor.getScale(),
+      location, adaptor.getOperand(), adaptor.getScale(), adaptor.getOffset(),
       adaptor.getFeatureIndex(), inferredReturnShapes);
 }
 
@@ -2068,13 +944,14 @@ LogicalResult BatchNormTrainingOp::inferReturnTypeComponents(
 //===----------------------------------------------------------------------===//
 
 LogicalResult BatchNormInferenceOp::inferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   BatchNormInferenceOp::Adaptor adaptor(operands, attributes, regions);
   return hlo::inferBatchNormInferenceOp(
-      location, adaptor.getOperand(), adaptor.getScale(),
-      adaptor.getFeatureIndex(), inferredReturnShapes);
+      location, adaptor.getOperand(), adaptor.getScale(), adaptor.getOffset(),
+      adaptor.getMean(), adaptor.getVariance(), adaptor.getFeatureIndex(),
+      inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2103,129 +980,22 @@ LogicalResult BitcastConvertOp::reifyReturnTypeShapes(
                                      &reifiedReturnShapes);
 }
 
-/*
- * We intend to verify the following properties
- * P1. We cannot convert between complex and real types (cf xla)
- * P3. The dimensions of the operand and the target
- * shape must match, except that the shape with the smaller element bitwidth has
- * an appropriately-sized additional innermost dimension, e.g.
- * ... x f32 => [bitcast_convert] => ... x 4 x i8
- * ... x 4 x i8 => [bitcast_convert] => ... x f32
- */
 LogicalResult BitcastConvertOp::verify() {
-  auto operandTensorType = getOperand().getType().cast<TensorType>();
-  auto targetTensorType = getResult().getType().cast<TensorType>();
-
-  // P1.
-  auto targetElt = targetTensorType.getElementType();
-  auto operandElt = operandTensorType.getElementType();
-  if (targetElt.isa<ComplexType>() != operandElt.isa<ComplexType>()) {
-    return emitOpError()
-           << "cannot convert between real and complex types, but got: "
-           << operandTensorType << " and " << targetTensorType;
-  }
-
-  auto targetEltBitwidth = hlo::potentiallyComplexBitwidth(targetElt);
-  auto operandEltBitwidth = hlo::potentiallyComplexBitwidth(operandElt);
-
-  // P2.
-  auto operandType = operandTensorType.dyn_cast<RankedTensorType>();
-  auto targetType = targetTensorType.dyn_cast<RankedTensorType>();
-  if (!operandType || !targetType) return success();
-
-  auto targetShape = targetType.getShape();
-  auto operandShape = operandType.getShape();
-  ArrayRef<int64_t> smallerEltShape, biggerEltShape;
-  Type smallerElt, biggerElt;
-  if (operandEltBitwidth < targetEltBitwidth) {
-    smallerEltShape = operandShape;
-    smallerElt = operandElt;
-    biggerEltShape = targetShape;
-    biggerElt = targetElt;
-  } else {
-    smallerEltShape = targetShape;
-    smallerElt = targetElt;
-    biggerEltShape = operandShape;
-    biggerElt = operandElt;
-  }
-
-  ArrayRef<int64_t> smallerEltPrefix;
-  auto smallerEltBitwidth = std::min(targetEltBitwidth, operandEltBitwidth);
-  auto biggerEltBitwidth = std::max(targetEltBitwidth, operandEltBitwidth);
-  if (operandEltBitwidth != targetEltBitwidth) {
-    if (smallerEltShape.empty()) {
-      return emitOpError() << "does not allow the smaller element type to be "
-                              "part of a 0d tensor, but got: "
-                           << operandType << " and " << targetType << ".";
-    }
-    smallerEltPrefix = smallerEltShape.drop_back();
-    if (!hlo::isDynamicDimSize(smallerEltShape.back()) &&
-        smallerEltShape.back() * smallerEltBitwidth != biggerEltBitwidth) {
-      return emitOpError() << "requires compatible bitwidths. "
-                           << "Got: " << operandType << " and " << targetType
-                           << ", but " << smallerEltBitwidth << " * "
-                           << smallerEltShape.back()
-                           << " != " << biggerEltBitwidth << ".";
-    }
-  } else {
-    smallerEltPrefix = smallerEltShape;
-  }
-
-  for (auto it : llvm::zip(smallerEltPrefix, biggerEltShape)) {
-    auto targetDim = std::get<0>(it);
-    auto operandDim = std::get<1>(it);
-    if (!hlo::isDynamicDimSize(targetDim) &&
-        !hlo::isDynamicDimSize(operandDim)) {
-      if (targetDim != operandDim) {
-        return emitOpError() << "operand and result shapes must match except "
-                                "for the innermost dimension of the shape with "
-                                "the smaller element type. Got: "
-                             << operandType << " and " << targetType << ".";
-      }
-    }
-  }
-
-  return success();
+  return hlo::verifyBitcastConvertOp(getLoc(), getOperand(), getResult());
 }
 
 //===----------------------------------------------------------------------===//
 // BroadcastOp
 //===----------------------------------------------------------------------===//
 
-// TODO(b/129012527) These should be expressed as type constraints.
-LogicalResult BroadcastOp::verify() {
-  auto sizes = getBroadcastSizes();
-  auto sizesType = sizes.getType();
-  auto sizesRank = sizesType.getRank();
-  if (sizesRank != 1) {
-    return emitOpError(llvm::formatv(
-        "broadcast_sizes has rank {0} instead of rank 1", sizesRank));
-  }
-
-  return success();
-}
-
 LogicalResult BroadcastOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   BroadcastOp::Adaptor adaptor(operands, attributes, regions);
-  Value operand = adaptor.getOperand();
-  auto operandType = operand.getType().dyn_cast<RankedTensorType>();
-  if (!operandType) return failure();
-
-  Type elementTy = operandType.getElementType();
-  auto dimensionAttr = adaptor.getBroadcastSizes();
-  for (int64_t size : dimensionAttr.getValues<int64_t>()) {
-    if (size < 0)
-      return emitOptionalError(location,
-                               "Broadcast with negative dimension size ", size);
-  }
-  SmallVector<int64_t> shapeValues(dimensionAttr.getValues<int64_t>());
-  llvm::append_range(shapeValues, operandType.getShape());
-
-  inferredReturnShapes.emplace_back(shapeValues, elementTy);
-  return success();
+  return hlo::inferBroadcastOp(location, adaptor.getOperand(),
+                               adaptor.getBroadcastSizes(),
+                               inferredReturnShapes);
 }
 
 LogicalResult BroadcastOp::reifyReturnTypeShapes(
@@ -2267,67 +1037,8 @@ LogicalResult BroadcastOp::reifyReturnTypeShapes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult BroadcastInDimOp::verify() {
-  auto operandType = getOperand().getType().dyn_cast<RankedTensorType>();
-  if (!operandType) {
-    // The following verification checks all depend on knowing the rank of
-    // the operand. Bail out now if we don't know the rank of the operand.
-    return success();
-  }
-
-  auto operandRank = operandType.getRank();
-  if (!getBroadcastDimensions()) {
-    if (operandRank == 0) {
-      return success();
-    }
-    return emitOpError(
-        llvm::formatv("broadcast_dimensions is absent, but required because "
-                      "operand has non-zero rank ({0})",
-                      operandRank));
-  }
-
-  auto dimensionsType = getBroadcastDimensions().getType();
-  auto dimensionsRank = dimensionsType.getRank();
-  if (dimensionsRank != 1) {
-    return emitOpError(llvm::formatv(
-        "broadcast_dimensions has rank {0} instead of rank 1", dimensionsRank));
-  }
-
-  auto dimensionsSize = dimensionsType.getNumElements();
-  if (dimensionsSize != operandRank) {
-    return emitOpError(llvm::formatv(
-        "broadcast_dimensions size ({0}) does not match operand rank ({1})",
-        dimensionsSize, operandRank));
-  }
-
-  auto dimensions =
-      llvm::to_vector(getBroadcastDimensions().getValues<int64_t>());
-  if (hasDuplicates(dimensions))
-    return emitOpError("broadcast_dimensions should not have duplicates");
-
-  auto resultType = getResult().getType().cast<RankedTensorType>();
-  auto resultRank = resultType.getRank();
-  for (int i = 0; i != dimensionsSize; ++i) {
-    auto dimIndex = dimensions[i];
-    if (dimIndex >= resultRank) {
-      return emitOpError(
-          llvm::formatv("broadcast_dimensions contains invalid value {0} for "
-                        "result with rank {1}",
-                        dimIndex, resultRank));
-    }
-
-    if (!operandType.isDynamicDim(i)) {
-      auto dimSize = operandType.getDimSize(i);
-      auto resultDimSize = resultType.getDimSize(dimIndex);
-      if (dimSize != 1 && dimSize != resultDimSize) {
-        return emitOpError(
-            llvm::formatv("size of operand dimension {0} ({1}) is not equal to "
-                          "1 or size of result dimension {2} ({3})",
-                          i, dimSize, dimIndex, resultDimSize));
-      }
-    }
-  }
-
-  return success();
+  return hlo::verifyBroadcastInDimOp(getLoc(), getOperand(),
+                                     getBroadcastDimensions(), getResult());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2335,101 +1046,10 @@ LogicalResult BroadcastInDimOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult DynamicBroadcastInDimOp::verify() {
-  auto operandType = getOperand().getType().dyn_cast<RankedTensorType>();
-  auto resultType = getResult().getType().dyn_cast<RankedTensorType>();
-
-  // If either the operand or result are unranked, there is very little
-  // to verify statically.
-  if (!operandType || !resultType) {
-    return success();
-  }
-
-  auto outputDimensionsType =
-      getOutputDimensions().getType().cast<RankedTensorType>();
-  auto outputDimensionsSize = outputDimensionsType.getDimSize(0);
-  auto operandRank = operandType.getRank();
-  auto resultRank = resultType.getRank();
-
-  // Verify broadcast_dimensions.
-  auto bcastDimensions = getBroadcastDimensions();
-  auto bcastDimensionsType = getBroadcastDimensions().getType();
-  auto bcastDimensionsRank = bcastDimensionsType.getRank();
-  // TODO(laurenzo): Update the BroadcastDimAttr to constrain its rank to 1.
-  if (bcastDimensionsRank != 1) {
-    return emitOpError(
-        llvm::formatv("broadcast_dimensions has rank {0} instead of rank 1",
-                      bcastDimensionsRank));
-  }
-
-  auto bcastDimensionsSize = bcastDimensionsType.getNumElements();
-  if (bcastDimensionsSize != operandRank) {
-    return emitOpError(llvm::formatv(
-        "broadcast_dimensions size ({0}) does not match operand rank ({1})",
-        bcastDimensionsSize, operandRank));
-  }
-
-  if (resultRank < operandRank) {
-    return emitOpError(
-        llvm::formatv("result rank ({0}) is less than operand rank ({1})",
-                      resultRank, operandRank));
-  }
-
-  for (int i = 0; i != bcastDimensionsSize; ++i) {
-    auto dimIndex = bcastDimensions.getValues<int64_t>()[i];
-    if (dimIndex >= resultRank) {
-      return emitOpError(
-          llvm::formatv("broadcast_dimensions contains invalid value {0} for "
-                        "result with rank {1}",
-                        dimIndex, resultRank));
-    }
-
-    auto dimSize = operandType.getDimSize(i);
-    auto resultDimSize = resultType.getDimSize(dimIndex);
-    // Note: verifyCompatibleShapes doesn't consider size-1 broadcasting, so we
-    // add a manual check for this.
-    if (dimSize != 1 && failed(verifyCompatibleShape(dimSize, resultDimSize))) {
-      return emitOpError(
-          llvm::formatv("size of operand dimension {0} ({1}) is not compatible "
-                        "with size of result dimension {2} ({3})",
-                        i, dimSize, dimIndex, resultDimSize));
-    }
-  }
-
-  if (outputDimensionsSize != resultRank) {
-    return emitOpError(
-        llvm::formatv("result rank ({0}) is not equal to number of output "
-                      "dimensions ({1})",
-                      resultRank, outputDimensionsSize));
-  }
-
-  // Verify that the known expanding and non-expanding dimensions are a subset
-  // of the operand's dimensions.
-  int64_t numKnownExpansionBehavior = 0;
-  DenseSet<int64_t> knownExpansionBehavior;
-  auto collectExpansionBehaviorDims =
-      [&](const Optional<DenseIntElementsAttr>& attr) {
-        if (!attr) return;
-        for (const APInt& it : *attr) {
-          numKnownExpansionBehavior++;
-          knownExpansionBehavior.insert(it.getLimitedValue());
-        }
-      };
-  collectExpansionBehaviorDims(getKnownExpandingDimensions());
-  collectExpansionBehaviorDims(getKnownNonexpandingDimensions());
-  if (knownExpansionBehavior.size() != numKnownExpansionBehavior) {
-    return emitOpError(
-        "duplicate expansion hint for at least one operand dimension");
-  }
-  for (int64_t i : knownExpansionBehavior) {
-    if (i < 0 || i >= operandRank) {
-      return emitOpError(
-          llvm::formatv("hint for expanding dimension {0} does not refer to a "
-                        "valid operand dimension",
-                        i));
-    }
-  }
-
-  return success();
+  return hlo::verifyDynamicBroadcastInDimOp(
+      getLoc(), getOperand(), getOutputDimensions(), getBroadcastDimensions(),
+      getKnownExpandingDimensions(), getKnownNonexpandingDimensions(),
+      getResult());
 }
 
 LogicalResult DynamicBroadcastInDimOp::reifyReturnTypeShapes(
@@ -2445,44 +1065,13 @@ LogicalResult DynamicBroadcastInDimOp::reifyReturnTypeShapes(
 // ClampOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult ClampOp::verify() {
-  auto operandType = getOperand().getType().cast<RankedTensorType>();
-  auto operandShape = operandType.getShape();
-  auto minType = getMin().getType().cast<RankedTensorType>();
-
-  auto minShape = minType.getShape();
-  if (failed(verifyCompatibleShape(minType, operandType)) &&
-      minType.getRank() != 0) {
-    return emitOpError(llvm::formatv(
-        "min shape [{0}] is not scalar and is not compatible to operand shape "
-        "[{1}]",
-        llvm::make_range(minShape.begin(), minShape.end()),
-        llvm::make_range(operandShape.begin(), operandShape.end())));
-  }
-
-  auto maxType = getMax().getType().cast<RankedTensorType>();
-  auto maxShape = maxType.getShape();
-  if (failed(verifyCompatibleShape(maxType, operandType)) &&
-      maxType.getRank() != 0) {
-    return emitOpError(llvm::formatv(
-        "max shape [{0}] is not scalar and is not compatible to operand shape "
-        "[{1}]",
-        llvm::make_range(maxShape.begin(), maxShape.end()),
-        llvm::make_range(operandShape.begin(), operandShape.end())));
-  }
-
-  return success();
-}
-
 LogicalResult ClampOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> /*location*/, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   ClampOp::Adaptor adaptor(operands, attributes, regions);
-  RankedTensorType operandType =
-      adaptor.getOperand().getType().cast<RankedTensorType>();
-  inferredReturnShapes.emplace_back(operandType.cast<ShapedType>());
-  return success();
+  return hlo::inferClampOp(location, adaptor.getMin(), adaptor.getOperand(),
+                           adaptor.getMax(), inferredReturnShapes);
 }
 
 LogicalResult ClampOp::reifyReturnTypeShapes(
@@ -2498,13 +1087,11 @@ LogicalResult ClampOp::reifyReturnTypeShapes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult ComplexOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands, DictionaryAttr,
-    RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  TensorType operandType = operands[0].getType().cast<TensorType>();
-  ComplexType elementTy = ComplexType::get(operandType.getElementType());
-  inferredReturnTypes.push_back(
-      hlo::getSameShapeTensorType(operandType, elementTy));
-  return success();
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  ComplexOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferComplexOp(location, adaptor.getLhs(), inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2512,11 +1099,11 @@ LogicalResult ComplexOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult ImagOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands, DictionaryAttr,
-    RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  inferredReturnTypes.push_back(
-      hlo::createRealType(operands[0].getType().cast<TensorType>()));
-  return success();
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  ImagOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferImagOp(location, adaptor.getOperand(), inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2524,13 +1111,12 @@ LogicalResult ImagOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult IsFiniteOp::inferReturnTypes(
-    MLIRContext* ctx, Optional<Location>, ValueRange operands, DictionaryAttr,
-    RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  auto argTy = operands.front().getType().cast<TensorType>();
-  Builder b(ctx);
-  inferredReturnTypes.push_back(
-      hlo::getSameShapeTensorType(argTy, b.getI1Type()));
-  return success();
+    MLIRContext* ctx, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  IsFiniteOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferIsFiniteOp(ctx, location, adaptor.getX(),
+                              inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2538,11 +1124,11 @@ LogicalResult IsFiniteOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult RealOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands, DictionaryAttr,
-    RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  inferredReturnTypes.push_back(
-      hlo::createRealType(operands[0].getType().cast<TensorType>()));
-  return success();
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  RealOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferRealOp(location, adaptor.getOperand(), inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2550,11 +1136,11 @@ LogicalResult RealOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult ConcatenateOp::inferReturnTypes(
-    MLIRContext*, Optional<Location> location, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   ConcatenateOp::Adaptor adaptor(operands, attributes, regions);
-  return hlo::inferConcatenateOp(location, adaptor.getInputs(),
+  return hlo::inferConcatenateOp(location, adaptor.getInputs().getTypes(),
                                  adaptor.getDimension(), inferredReturnTypes);
 }
 
@@ -2617,15 +1203,7 @@ LogicalResult ConcatenateOp::reifyReturnTypeShapes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult DynamicReshapeOp::verify() {
-  auto resultType = getResult().getType().dyn_cast<RankedTensorType>();
-  auto outputShapeType =
-      getOutputShape().getType().dyn_cast<RankedTensorType>();
-  if (resultType && outputShapeType && outputShapeType.hasStaticShape() &&
-      outputShapeType.getDimSize(0) != resultType.getRank()) {
-    return emitError() << "output should have a rank equal to the number of "
-                          "elements in output_shape";
-  }
-  return success();
+  return hlo::verifyDynamicReshapeOp(getLoc(), getOutputShape(), getResult());
 }
 
 LogicalResult DynamicReshapeOp::reifyReturnTypeShapes(
@@ -2641,90 +1219,24 @@ LogicalResult DynamicReshapeOp::reifyReturnTypeShapes(
 // DynamicSliceOp
 //===----------------------------------------------------------------------===//
 
-// Verifies that the number of slice sizes and the number of start indices match
-LogicalResult DynamicSliceOp::verify() {
-  int numSliceSizes = getSliceSizes().getNumElements();
-  int numStartIndices = getStartIndices().size();
-  if (numStartIndices != numSliceSizes) {
-    return emitOpError() << "has mismatched number of slice sizes ("
-                         << numSliceSizes << ") and number of start indices ("
-                         << numStartIndices << ")";
-  }
-  auto operandType = getOperand().getType().dyn_cast<RankedTensorType>();
-  if (!operandType) return failure();
-
-  if (operandType.getRank() != numStartIndices) {
-    return emitOpError() << "has mismatched number of start indices ("
-                         << numStartIndices << ") and the rank of operand ("
-                         << operandType.getRank() << ")";
-  }
-
-  for (int i = 0; i < numSliceSizes; ++i) {
-    int64_t sliceSize = getSliceSizes().getValues<int64_t>()[i];
-    if (sliceSize < 0) {
-      return emitOpError() << "has negative size index to dynamic slice: "
-                           << sliceSize;
-    }
-    if (!operandType.isDynamicDim(i)) {
-      int64_t dimSize = operandType.getDimSize(i);
-      if (sliceSize > dimSize) {
-        return emitOpError() << "has slice size " << sliceSize
-                             << " greater than dimension size " << dimSize
-                             << " in dimension " << i << " of operand";
-      }
-    }
-  }
-  return success();
-}
-
 LogicalResult DynamicSliceOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   DynamicSliceOp::Adaptor adaptor(operands, attributes, regions);
-  Value operand = adaptor.getOperand();
-  auto operandType = operand.getType().dyn_cast<RankedTensorType>();
-  if (!operandType) return failure();
-
-  auto sliceSizes = adaptor.getSliceSizes();
-  Type elementTy = operandType.getElementType();
-  inferredReturnShapes.emplace_back(sliceSizes.getValues<int64_t>(), elementTy);
-  return success();
+  return hlo::inferDynamicSliceOp(location, adaptor.getOperand().getType(),
+                                  adaptor.getStartIndices().getTypes(),
+                                  adaptor.getSliceSizes(),
+                                  inferredReturnShapes);
 }
 
 //===----------------------------------------------------------------------===//
 // RealDynamicSliceOp
 //===----------------------------------------------------------------------===//
-// Verifies that operand rank matches start_indices/limit_indices/strides size
 LogicalResult RealDynamicSliceOp::verify() {
-  auto inputType = getOperand().getType().dyn_cast<RankedTensorType>();
-  // If operand is unranked, there is very little to verify statically.
-  if (!inputType) return success();
-  int inputRank = inputType.getRank();
-
-  auto startType = getStartIndices().getType().cast<RankedTensorType>();
-  auto limitType = getLimitIndices().getType().cast<RankedTensorType>();
-  auto stridesType = getStrides().getType().cast<RankedTensorType>();
-
-  if (inputRank != startType.getNumElements()) {
-    return emitOpError() << "has mismatched number of operand rank ("
-                         << inputRank << ") and start_indices size ("
-                         << startType.getNumElements() << ")";
-  }
-
-  if (inputRank != limitType.getNumElements()) {
-    return emitOpError() << "has mismatched number of operand rank ("
-                         << inputRank << ") and limit_indices size ("
-                         << limitType.getNumElements() << ")";
-  }
-
-  if (inputRank != stridesType.getNumElements()) {
-    return emitOpError() << "has mismatched number of operand rank ("
-                         << inputRank << ") and strides size ("
-                         << stridesType.getNumElements() << ")";
-  }
-
-  return success();
+  return hlo::verifyRealDynamicSliceOp(getLoc(), getOperand(),
+                                       getStartIndices(), getLimitIndices(),
+                                       getStrides());
 }
 
 LogicalResult RealDynamicSliceOp::reifyReturnTypeShapes(
@@ -2778,56 +1290,9 @@ LogicalResult RealDynamicSliceOp::reifyReturnTypeShapes(
 // InfeedOp
 //===----------------------------------------------------------------------===//
 
-// Checks that the result type is of the form `zero_or_more_type(s),
-// stablehlo::token`
 LogicalResult InfeedOp::verify() {
-  auto resultTypes = getResultTypes();
-  if (resultTypes.empty())
-    return emitOpError()
-           << "result is expected to be at least of size 1, but got "
-           << resultTypes.size();
-
-  if (!resultTypes[resultTypes.size() - 1].isa<TokenType>())
-    return emitOpError() << "last element of result types is expected to "
-                            "be of token type, but got "
-                         << resultTypes[resultTypes.size() - 1];
-
-  // Verify layout attribute
-  constexpr char kLayoutAttr[] = "layout";
-  if (!getOperation()->hasAttr(kLayoutAttr)) return success();
-
-  mlir::ArrayAttr layout =
-      getOperation()->getAttrOfType<mlir::ArrayAttr>(kLayoutAttr);
-  if (!layout)
-    return emitOpError() << "layout-attribute expected to be of array-type.";
-
-  if (layout.size() != resultTypes.size() - 1) {
-    return emitOpError() << "layout-attribute size must be "
-                         << resultTypes.size() - 1
-                         << " (which is the number of "
-                            "op-results - 1 (for token result)), but got "
-                         << layout.size();
-  }
-
-  for (auto childLayout : layout) {
-    mlir::ArrayAttr childLayoutArr = childLayout.dyn_cast<mlir::ArrayAttr>();
-    if (!childLayoutArr) {
-      return emitOpError() << "layout-attribute expected to have "
-                              "elements of type array, but got "
-                           << childLayout;
-    }
-
-    for (auto i : childLayoutArr) {
-      mlir::IntegerAttr attr = i.dyn_cast<mlir::IntegerAttr>();
-      if (!attr) {
-        return emitOpError() << "layout-attribute's leaf elements are "
-                                "expected to be of type integer, but got "
-                             << i;
-      }
-    }
-  }
-
-  return success();
+  auto dialect = getContext()->getLoadedDialect<StablehloDialect>();
+  return hlo::verifyInfeedOp(dialect, getLoc(), getLayout(), getResults());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2835,7 +1300,7 @@ LogicalResult InfeedOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult MapOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   MapOp::Adaptor adaptor(operands, attributes, regions);
@@ -2851,22 +1316,35 @@ LogicalResult MapOp::reifyReturnTypeShapes(
 }
 
 //===----------------------------------------------------------------------===//
+// OutfeedOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult OutfeedOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto dialect = context->getLoadedDialect<StablehloDialect>();
+  return hlo::inferOutfeedOp(dialect, location, inferredReturnTypes);
+}
+
+//===----------------------------------------------------------------------===//
+// Send Op
+//===----------------------------------------------------------------------===//
+
+LogicalResult SendOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr, RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto dialect = context->getLoadedDialect<StablehloDialect>();
+  return hlo::inferSendOp(dialect, location, inferredReturnTypes);
+}
+
+//===----------------------------------------------------------------------===//
 // RecvOp
 //===----------------------------------------------------------------------===//
 
-// Checks that the result type is of the form `zero_or_more_type(s),
-// stablehlo::token`
 LogicalResult RecvOp::verify() {
-  auto resultTypes = getResultTypes();
-  if (resultTypes.empty())
-    return emitOpError()
-           << "result is expected to be at least of size 1, but got "
-           << resultTypes.size();
-  if (!resultTypes[resultTypes.size() - 1].isa<TokenType>())
-    return emitOpError() << "last element of result types is expected to "
-                            "be of token type, but got "
-                         << resultTypes[resultTypes.size() - 1];
-  return success();
+  auto dialect = getContext()->getLoadedDialect<StablehloDialect>();
+  return hlo::verifyRecvOp(dialect, getLoc(), getResults());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2874,7 +1352,7 @@ LogicalResult RecvOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ReduceWindowOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   ReduceWindowOp::Adaptor adaptor(operands, attributes, regions);
@@ -2882,43 +1360,88 @@ LogicalResult ReduceWindowOp::inferReturnTypeComponents(
       location, adaptor.getInputs(), adaptor.getInitValues(),
       adaptor.getWindowDimensions(), adaptor.getWindowStrides(),
       adaptor.getBaseDilations(), adaptor.getWindowDilations(),
-      adaptor.getPadding(), adaptor.getBody(), inferredReturnShapes);
+      adaptor.getPadding(), inferredReturnShapes);
 }
 
-// Get the operation used for reduction applied to `result_index`th result. Its
-// expected to be a binary operation that consumes `result_index`th and
-// `result_index + getInputs().size`th arguments of the body.
-Operation* ReduceWindowOp::getReductionOp(int resultIndex) {
-  auto returnOp = cast<ReturnOp>(getBody().front().getTerminator());
-  Operation* computeOp = returnOp.getResults()[resultIndex].getDefiningOp();
-  if (computeOp->getNumOperands() != 2) return nullptr;
-  auto arg0 = computeOp->getOperand(0).dyn_cast<BlockArgument>();
-  auto arg1 = computeOp->getOperand(1).dyn_cast<BlockArgument>();
-  if (!arg0 || !arg1) return nullptr;
-  int64_t arg0Num = arg0.getArgNumber();
-  int64_t arg1Num = arg1.getArgNumber();
-  int64_t otherArgIndex = resultIndex + getInputs().size();
-  if (arg0Num == resultIndex && arg1Num == otherArgIndex) return computeOp;
-  if (arg0Num == otherArgIndex && arg1Num == resultIndex &&
-      computeOp->hasTrait<mlir::OpTrait::IsCommutative>())
-    return computeOp;
-  return nullptr;
+LogicalResult ReduceWindowOp::verify() {
+  return hlo::verifyReduceWindowOp(getLoc(), getInputs(), getInitValues(),
+                                   getWindowDimensions(), getWindowStrides(),
+                                   getBaseDilations(), getWindowDilations(),
+                                   getPadding(), getBody());
+}
+
+// Builder that takes a constructor for its region and infers result types
+void ReduceWindowOp::build(
+    OpBuilder& odsBuilder, OperationState& odsState, ValueRange inputs,
+    ValueRange init_values, DenseIntElementsAttr window_dimensions,
+    /*optional*/ DenseIntElementsAttr window_strides,
+    /*optional*/ DenseIntElementsAttr base_dilations,
+    /*optional*/ DenseIntElementsAttr window_dilations,
+    /*optional*/ DenseIntElementsAttr padding,
+    function_ref<void(OpBuilder&, Location, ValueRange)> bodyBuilder) {
+  odsState.addOperands(inputs);
+  odsState.addOperands(init_values);
+  odsState.addAttribute(getWindowDimensionsAttrName(odsState.name),
+                        window_dimensions);
+  if (window_strides) {
+    odsState.addAttribute(getWindowStridesAttrName(odsState.name),
+                          window_strides);
+  }
+  if (base_dilations) {
+    odsState.addAttribute(getBaseDilationsAttrName(odsState.name),
+                          base_dilations);
+  }
+  if (window_dilations) {
+    odsState.addAttribute(getWindowDilationsAttrName(odsState.name),
+                          window_dilations);
+  }
+  if (padding) {
+    odsState.addAttribute(getPaddingAttrName(odsState.name), padding);
+  }
+  Region* region = odsState.addRegion();
+
+  llvm::SmallVector<Type> blockArgTypes;
+  llvm::SmallVector<Location> locs;
+  auto numValues = inputs.size() + init_values.size();
+  blockArgTypes.reserve(numValues);
+  locs.reserve(numValues);
+  for (auto i : inputs) {
+    auto iType = i.getType().cast<ShapedType>();
+    blockArgTypes.push_back(iType.cloneWith(
+        llvm::ArrayRef<int64_t>(std::nullopt), iType.getElementType()));
+    locs.push_back(i.getLoc());
+  }
+  for (auto i : init_values) {
+    auto iType = i.getType().cast<ShapedType>();
+    blockArgTypes.push_back(iType.cloneWith(
+        llvm::ArrayRef<int64_t>(std::nullopt), iType.getElementType()));
+    locs.push_back(i.getLoc());
+  }
+
+  {
+    OpBuilder::InsertionGuard g(odsBuilder);
+    Block* body =
+        odsBuilder.createBlock(region, /*insertPt=*/{}, blockArgTypes, locs);
+    bodyBuilder(odsBuilder, odsState.location, body->getArguments());
+  }
+
+  llvm::SmallVector<mlir::Type, 2> inferredReturnTypes;
+  if (mlir::succeeded(ReduceWindowOp::inferReturnTypes(
+          odsBuilder.getContext(), odsState.location, odsState.operands,
+          odsState.attributes.getDictionary(odsState.getContext()),
+          odsState.regions, inferredReturnTypes)))
+    odsState.addTypes(inferredReturnTypes);
+  else
+    llvm::report_fatal_error("Failed to infer result type(s).");
 }
 
 //===----------------------------------------------------------------------===//
 // ReducePrecisionOp
 //===----------------------------------------------------------------------===//
 
-// The following property is already enforced by the ODS:
-//  P0. operand element type is float
-//  P1. mantissa_bits >= 0
-// We intend to verify the following properties
-//  P2. exponent_bits >= 1
 LogicalResult ReducePrecisionOp::verify() {
-  if (getExponentBits() < 1) {
-    return emitOpError() << "exponent_bits must be at least 1.";
-  }
-  return success();
+  return hlo::verifyReducePrecisionOp(getLoc(), getExponentBits(),
+                                      getMantissaBits());
 }
 
 //===----------------------------------------------------------------------===//
@@ -3100,15 +1623,15 @@ ParseResult ReduceOp::parse(OpAsmParser& parser, OperationState& result) {
     SmallVector<OpAsmParser::UnresolvedOperand, 2> reducerInitOperands;
     SmallVector<Type, 2> reducerTypes;
     SmallVector<Type, 2> reducerInitTypes;
-    SmallVector<Optional<Location>, 2> reducerLocs;
-    SmallVector<Optional<Location>, 2> reducerInitLocs;
+    SmallVector<std::optional<Location>, 2> reducerLocs;
+    SmallVector<std::optional<Location>, 2> reducerInitLocs;
     auto parseBlockOperand =
         [&](SmallVectorImpl<OpAsmParser::UnresolvedOperand>& operands,
             SmallVectorImpl<Type>& types,
-            SmallVectorImpl<Optional<Location>>& locs) -> ParseResult {
+            SmallVectorImpl<std::optional<Location>>& locs) -> ParseResult {
       OpAsmParser::UnresolvedOperand operand;
       Type type;
-      Optional<Location> loc;
+      std::optional<Location> loc;
       if (parser.parseOperand(operand, /*allowResultNumber=*/false) ||
           parser.parseColon() || parser.parseType(type) ||
           parser.parseOptionalLocationSpecifier(loc))
@@ -3136,7 +1659,7 @@ ParseResult ReduceOp::parse(OpAsmParser& parser, OperationState& result) {
 
     // Derive the SSA-values for reduce-op's operands and parse the region, and
     // the optional trailing location.
-    Optional<Location> trailingLoc;
+    std::optional<Location> trailingLoc;
     if (parser.resolveOperands(operands, reduceOpFntype.getInputs(), loc,
                                result.operands) ||
         parser.parseRegion(*result.addRegion(), reducerArgs))
@@ -3176,7 +1699,7 @@ ParseResult ReduceOp::parse(OpAsmParser& parser, OperationState& result) {
     return success();
   };
 
-  Optional<Location> explicitLoc;
+  std::optional<Location> explicitLoc;
   FunctionType reduceOpFntype;
   if (parser.parseKeyword("across") || parser.parseKeyword("dimensions") ||
       parser.parseEqual() ||
@@ -3236,13 +1759,18 @@ ParseResult ReduceOp::parse(OpAsmParser& parser, OperationState& result) {
 }
 
 LogicalResult ReduceOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   ReduceOp::Adaptor adaptor(operands, attributes, regions);
-  return hlo::inferReduceOp(location, adaptor.getInputs(),
-                            adaptor.getInitValues(), adaptor.getDimensions(),
-                            adaptor.getBody(), inferredReturnShapes);
+  return hlo::inferReduceOp(location, adaptor.getInputs().getTypes(),
+                            adaptor.getInitValues().getTypes(),
+                            adaptor.getDimensions(), inferredReturnShapes);
+}
+
+LogicalResult ReduceOp::verify() {
+  return hlo::verifyReduceOp(getLoc(), getInputs(), getInitValues(),
+                             getDimensions(), getBody());
 }
 
 LogicalResult ReduceOp::reifyReturnTypeShapes(
@@ -3292,12 +1820,19 @@ LogicalResult ReduceOp::reifyReturnTypeShapes(
 // OptimizationBarrierOp
 //===----------------------------------------------------------------------===//
 LogicalResult OptimizationBarrierOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   OptimizationBarrierOp::Adaptor adaptor(operands, attributes);
-  return hlo::inferOptimizationBarrierOp(adaptor.getOperand(),
+  return hlo::inferOptimizationBarrierOp(location, adaptor.getOperand(),
                                          inferredReturnTypes);
+}
+
+//===----------------------------------------------------------------------===//
+// ReverseOp
+//===----------------------------------------------------------------------===//
+LogicalResult ReverseOp::verify() {
+  return hlo::verifyReverseOp(getLoc(), getOperand(), getDimensions());
 }
 
 //===----------------------------------------------------------------------===//
@@ -3306,38 +1841,23 @@ LogicalResult OptimizationBarrierOp::inferReturnTypes(
 
 // Verify that input state has the same shape as output shape
 LogicalResult RngBitGeneratorOp::verify() {
-  auto initialShape = getInitialState().getType().dyn_cast<RankedTensorType>();
-  auto outputShape = getOutputState().getType().dyn_cast<RankedTensorType>();
-  if (initialShape.getShape() != outputShape.getShape())
-    return emitOpError()
-           << "output state shape must match initial state shape. Got: "
-           << initialShape << " and " << outputShape;
-  return success();
+  return hlo::verifyRngBitGeneratorOp(getLoc(), getInitialState(),
+                                      getOutputState());
 }
 
 //===----------------------------------------------------------------------===//
 // RngOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult RngOp::verify() {
-  auto dist = getRngDistribution();
-  if (dist == RngDistribution::UNIFORM) {
-    return success();
-  }
-  auto muTy = getA().getType().cast<TensorType>().getElementType();
-  auto sigmaTy = getB().getType().cast<TensorType>().getElementType();
-  if (muTy.isa<FloatType>() && sigmaTy.isa<FloatType>()) {
-    return success();
-  }
-  return emitOpError() << "mu and sigma must be floats";
-}
-
 LogicalResult RngOp::inferReturnTypeComponents(
-    MLIRContext* context, Optional<Location> location, ValueShapeRange operands,
-    DictionaryAttr attributes, RegionRange regions,
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  return rngInferReturnTypeComponents(context, location, operands, attributes,
-                                      regions, inferredReturnShapes);
+  RngOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferRngOp(
+      location, adaptor.getA(), adaptor.getB(), adaptor.getShape(),
+      adaptor.getRngDistribution() == RngDistribution::UNIFORM,
+      inferredReturnShapes);
 }
 
 LogicalResult RngOp::reifyReturnTypeShapes(
@@ -3353,57 +1873,13 @@ LogicalResult RngOp::reifyReturnTypeShapes(
 // SelectOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult SelectOp::verify() {
-  // The operands 'on_true' and 'on_false' should have compatible types, i.e.,
-  //   (a) have the same element type, and
-  //   (b) have compatible shapes (i.e. the same shape and/or at least one
-  //       dynamic shape)
-  if (!hlo::compatibleShapeAndElementType(getOnTrue().getType(),
-                                          getOnFalse().getType()))
-    return emitOpError()
-           << "requires compatible types for non-predicate operands";
-
-  // The predicate, if not-scalar, should have the same shape as the remaining
-  // operands.
-  auto predTy = getPred().getType().dyn_cast<RankedTensorType>();
-  bool predMayBeScalar = !predTy || predTy.getRank() == 0;
-  if (predMayBeScalar) return success();
-
-  if (failed(verifyCompatibleShape(getPred().getType(), getOnTrue().getType())))
-    return emitOpError() << "requires the same shape for all operands";
-
-  return success();
-}
-
-// Makes it such that a SelectOp that is a non-root operation in a DRR infers
-// the return type based on operand type.
 LogicalResult SelectOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   SelectOp::Adaptor op(operands, attributes);
-  auto trueType = op.getOnTrue().getType().cast<TensorType>();
-  auto falseType = op.getOnFalse().getType().cast<TensorType>();
-
-  // The output shape should be the most general of the operand shapes at each
-  // dimension.
-  ShapedTypeComponents& outputType = inferredReturnShapes.emplace_back();
-  if (trueType == falseType || !trueType.hasRank()) {
-    outputType = ShapedTypeComponents(trueType.cast<ShapedType>());
-  } else if (!falseType.hasRank()) {
-    outputType = ShapedTypeComponents(falseType.cast<ShapedType>());
-  } else {
-    assert(trueType.getRank() == falseType.getRank());
-    llvm::SmallVector<int64_t, 4> dims;
-    dims.reserve(trueType.getRank());
-    for (auto dim : llvm::zip(trueType.getShape(), falseType.getShape())) {
-      dims.push_back(std::get<0>(dim) == std::get<1>(dim)
-                         ? std::get<0>(dim)
-                         : ShapedType::kDynamic);
-    }
-    outputType = ShapedTypeComponents(dims, trueType.getElementType());
-  }
-  return success();
+  return hlo::inferSelectOp(location, op.getPred(), op.getOnTrue(),
+                            op.getOnFalse(), inferredReturnShapes);
 }
 
 LogicalResult SelectOp::reifyReturnTypeShapes(
@@ -3423,14 +1899,15 @@ LogicalResult SetDimensionSizeOp::verify() {
     if (size.getRank() != 0)
       return emitOpError() << "size operand should be of rank-0";
   }
-
-  return verifyDimAttr(*this);
+  auto operandTy = getOperand().getType().cast<ShapedType>();
+  int64_t dim = getDimension();
+  return verifyDimInBounds(getLoc(), operandTy, dim);
 }
 
 // TODO(b/238903565): Switch to inferReturnTypeComponents after adding support
 // for the encoding upstream.
 LogicalResult SetDimensionSizeOp::inferReturnTypes(
-    MLIRContext* context, Optional<Location> location, ValueRange operands,
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   Location loc = location.value_or(UnknownLoc::get(context));
@@ -3485,7 +1962,7 @@ LogicalResult SetDimensionSizeOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult PadOp::inferReturnTypes(
-    MLIRContext*, Optional<Location> location, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   PadOp::Adaptor adaptor(operands, attributes, regions);
@@ -3563,49 +2040,9 @@ LogicalResult PadOp::reifyReturnTypeShapes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult DynamicPadOp::verify() {
-  auto inputType = getOperand().getType().dyn_cast<RankedTensorType>();
-  // If operand is unranked, there is very little to verify statically.
-  if (!inputType) return success();
-  int inputRank = inputType.getRank();
-
-  auto padType = getPaddingValue().getType().cast<RankedTensorType>();
-  if (padType.getRank() != 0) {
-    return emitOpError() << "padding value type should be a rank-0";
-  }
-
-  auto paddingLowType = getEdgePaddingLow().getType().cast<RankedTensorType>();
-  if (paddingLowType.getNumElements() != inputRank) {
-    return emitOpError() << "edge_padding_low length("
-                         << paddingLowType.getNumElements()
-                         << ") must match operand rank(" << inputRank << ").";
-  }
-
-  auto paddingHighType =
-      getEdgePaddingHigh().getType().cast<RankedTensorType>();
-  if (paddingHighType.getNumElements() != inputRank) {
-    return emitOpError() << "edge_padding_high length("
-                         << paddingHighType.getNumElements()
-                         << ") must match operand rank(" << inputRank << ").";
-  }
-
-  auto interiorPaddingType =
-      getInteriorPadding().getType().cast<RankedTensorType>();
-  if (interiorPaddingType.getNumElements() != inputRank) {
-    return emitOpError() << "edge_padding_interior length("
-                         << interiorPaddingType.getNumElements()
-                         << ") must match operand rank(" << inputRank << ").";
-  }
-
-  auto outputType = getResult().getType().dyn_cast<RankedTensorType>();
-  // If result is unranked, there is very little to verify statically.
-  if (!outputType) return success();
-  int outputRank = outputType.getRank();
-  if (inputRank != outputRank) {
-    return emitOpError() << "operand rank(" << inputRank
-                         << ") must match result(" << outputRank << ").";
-  }
-
-  return success();
+  return hlo::verifyDynamicPadOp(getLoc(), getOperand(), getPaddingValue(),
+                                 getEdgePaddingLow(), getEdgePaddingHigh(),
+                                 getInteriorPadding(), getResult());
 }
 
 LogicalResult DynamicPadOp::reifyReturnTypeShapes(
@@ -3676,23 +2113,7 @@ LogicalResult DynamicPadOp::reifyReturnTypeShapes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult ReshapeOp::verify() {
-  // If the operand type is dynamically shaped there is nothing to verify.
-  auto operandTy = getOperand().getType().dyn_cast<RankedTensorType>();
-  if (!operandTy || !operandTy.hasStaticShape()) return success();
-
-  // If the operand type is statically shaped (not required) the number of
-  // elements must match that of the result type.
-  auto resultTy = getType().cast<RankedTensorType>();
-  assert(resultTy && resultTy.hasStaticShape() &&
-         "result type must be statically shaped");
-  int64_t numResultElements = resultTy.getNumElements();
-  int64_t numOperandElements = operandTy.getNumElements();
-  if (numResultElements != numOperandElements)
-    return emitOpError() << "number of output elements (" << numResultElements
-                         << ") doesn't match expected number of elements ("
-                         << numOperandElements << ")";
-
-  return success();
+  return hlo::verifyReshapeOp(getLoc(), getOperand(), getResult());
 }
 
 //===----------------------------------------------------------------------===//
@@ -3700,11 +2121,20 @@ LogicalResult ReshapeOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ReplicaIdOp::inferReturnTypes(
-    MLIRContext* context, Optional<Location>, ValueRange operands,
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr, RegionRange, SmallVectorImpl<Type>& inferredReturnTypes) {
-  inferredReturnTypes.push_back(RankedTensorType::get(
-      /*shape=*/{}, IntegerType::get(context, 32, IntegerType::Unsigned)));
-  return success();
+  return hlo::inferReplicaIdOp(context, location, inferredReturnTypes);
+}
+
+//===----------------------------------------------------------------------===//
+// PartitionId Op
+//===----------------------------------------------------------------------===//
+
+LogicalResult PartitionIdOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location,
+    ValueRange /*operands*/, DictionaryAttr, RegionRange,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  return hlo::inferPartitionIdOp(context, location, inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3712,7 +2142,7 @@ LogicalResult ReplicaIdOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult IfOp::inferReturnTypes(
-    MLIRContext*, Optional<Location> location, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   IfOp::Adaptor adaptor(operands, attributes, regions);
@@ -3724,7 +2154,7 @@ LogicalResult IfOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult CaseOp::inferReturnTypes(
-    MLIRContext*, Optional<Location> location, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   CaseOp::Adaptor adaptor(operands, attributes, regions);
@@ -3736,11 +2166,11 @@ LogicalResult CaseOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult SliceOp::inferReturnTypes(
-    MLIRContext* context, Optional<Location> location, ValueRange operands,
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   SliceOpAdaptor adaptor(operands, attributes);
-  return hlo::inferSliceOp(location, adaptor.getOperand(),
+  return hlo::inferSliceOp(location, adaptor.getOperand().getType(),
                            adaptor.getStartIndices(), adaptor.getLimitIndices(),
                            adaptor.getStrides(), inferredReturnTypes);
 }
@@ -3761,12 +2191,16 @@ void SortOp::build(OpBuilder& builder, OperationState& state,
 }
 
 LogicalResult SortOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   SortOp::Adaptor adaptor(operands, attributes, regions);
-  return hlo::inferSortOp(location, adaptor.getInputs(), adaptor.getDimension(),
-                          adaptor.getComparator(), inferredReturnShapes);
+  return hlo::inferSortOp(location, adaptor.getInputs(), inferredReturnShapes);
+}
+
+LogicalResult SortOp::verify() {
+  return hlo::verifySortOp(getLoc(), getInputs(), getDimension(),
+                           getComparator());
 }
 
 //===----------------------------------------------------------------------===//
@@ -3812,13 +2246,12 @@ LogicalResult TransposeOp::reifyReturnTypeShapes(
 }
 
 LogicalResult TransposeOp::inferReturnTypes(
-    MLIRContext*, Optional<Location> loc, ValueRange operands,
+    MLIRContext*, std::optional<Location> loc, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   TransposeOp::Adaptor adaptor(operands, attributes, regions);
-  LogicalResult result = hlo::inferTransposeOp(
-      loc, adaptor.getOperand(), adaptor.getPermutation(), inferredReturnTypes);
-  return result;
+  return hlo::inferTransposeOp(loc, adaptor.getOperand(),
+                               adaptor.getPermutation(), inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3826,7 +2259,7 @@ LogicalResult TransposeOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult TriangularSolveOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> location, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   TriangularSolveOp::Adaptor adaptor(operands, attributes, regions);
@@ -3842,19 +2275,12 @@ LogicalResult TriangularSolveOp::inferReturnTypeComponents(
 //===----------------------------------------------------------------------===//
 
 LogicalResult GetTupleElementOp::inferReturnTypes(
-    MLIRContext*, Optional<Location>, ValueRange operands,
-    DictionaryAttr attributes, RegionRange,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
-  auto tupleType = operands[0].getType().dyn_cast<TupleType>();
-  if (!tupleType) return failure();
-
-  auto indexAttr = attributes.get("index").cast<IntegerAttr>();
-  auto index = indexAttr.getInt();
-  if (index < 0 || index >= static_cast<int64_t>(tupleType.size()))
-    return failure();
-
-  inferredReturnTypes.push_back(tupleType.getType(index));
-  return success();
+  GetTupleElementOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferGetTupleElementOp(location, adaptor.getOperand(),
+                                     adaptor.getIndex(), inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3862,11 +2288,12 @@ LogicalResult GetTupleElementOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult TupleOp::inferReturnTypes(
-    MLIRContext* context, Optional<Location>, ValueRange operands,
-    DictionaryAttr attributes, RegionRange,
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
-  inferredReturnTypes.push_back(TupleType::get(context, TypeRange(operands)));
-  return success();
+  TupleOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferTupleOp(context, location, adaptor.getVal(),
+                           inferredReturnTypes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3882,17 +2309,12 @@ void CompareOp::build(OpBuilder& builder, OperationState& result, Value lhs,
 }
 
 LogicalResult CompareOp::inferReturnTypeComponents(
-    mlir::MLIRContext* ctx, llvm::Optional<mlir::Location>,
-    ValueShapeRange operands, mlir::DictionaryAttr, mlir::RegionRange,
-    llvm::SmallVectorImpl<mlir::ShapedTypeComponents>& inferredReturnTypes) {
-  ShapedTypeComponents& components =
-      inferredReturnTypes.emplace_back(IntegerType::get(ctx, /*width=*/1));
-  auto argTy = operands.front().getType().cast<TensorType>();
-  if (argTy.hasRank()) {
-    components =
-        ShapedTypeComponents(argTy.getShape(), components.getElementType());
-  }
-  return success();
+    MLIRContext* context, std::optional<Location> location,
+    ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
+  CompareOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferCompareOp(context, location, adaptor.getLhs(),
+                             inferredReturnShapes);
 }
 
 LogicalResult CompareOp::reifyReturnTypeShapes(
@@ -3906,428 +2328,42 @@ LogicalResult CompareOp::reifyReturnTypeShapes(
 // SelectAndScatterOp
 //===----------------------------------------------------------------------===//
 
-namespace {
-// Infer the return-type of SelectAndScatterOp.
-TensorType inferSelectAndScatterOpReturnType(
-    TensorType operandType, const ArrayRef<hlo::WindowDimension> window) {
-  if (!operandType.hasRank())
-    return UnrankedTensorType::get(operandType.getElementType());
-
-  return RankedTensorType::get(
-      hlo::inferWindowOutputShape(operandType.getShape(), window),
-      operandType.getElementType());
+LogicalResult SelectAndScatterOp::inferReturnTypes(
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  SelectAndScatterOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferSelectAndScatterOp(adaptor.getOperand(),
+                                      inferredReturnTypes);
 }
-}  // namespace
 
-//  We intend to verify the following properties:
-//   P1. Check if the select function has a proper shape of (T,T) -> PRED, where
-//        T is a 0-D tensor with element-type same as 'operand' element-type.
-//   P2. Verify scatter-computation type.
-//   P3. size-of(window_dimension) == rank-of(input),
-//         where input is an element of 'inputs'.
-//   P4. Verify and collect the window attributes.
-//   P5. Verify the return type matches the operand-type.
-//   P6. Check if the result type of window operation matches the source type.
 LogicalResult SelectAndScatterOp::verify() {
-  auto operandType = getOperand().getType().cast<TensorType>();
-  auto initValueType = getInitValue().getType().cast<TensorType>();
-  auto sourceType = getSource().getType().cast<TensorType>();
-  auto resultType = getResult().getType().cast<TensorType>();
-
-  // P1.
-  Block& selectBlock = getSelect().front();
-
-  if (selectBlock.getArguments().size() != 2)
-    return emitOpError()
-           << "expects the select-region to take 2 parameters, but takes "
-           << selectBlock.getArguments().size();
-
-  Type expectedSelectArgType =
-      RankedTensorType::get({}, operandType.getElementType());
-  for (const auto& selectArgIt : llvm::enumerate(selectBlock.getArguments()))
-    if (!hlo::compatibleShapeAndElementType(expectedSelectArgType,
-                                            selectArgIt.value().getType(),
-                                            /*ignoreFpPrecision=*/true))
-      return emitOpError()
-             << "expects the type of select-region's parameter at index "
-             << selectArgIt.index() << " to be " << expectedSelectArgType
-             << ", but got " << selectArgIt.value().getType();
-
-  auto selectResult = selectBlock.getTerminator()->getOperands();
-  if (selectResult.size() != 1)
-    return emitOpError()
-           << "expects select-region to return single value, but got: "
-           << selectResult.size();
-
-  auto selectResultType = selectResult[0].getType().dyn_cast<TensorType>();
-  if (!selectResultType || !selectResultType.getElementType().isInteger(1) ||
-      (selectResultType.hasRank() &&
-       selectResultType.cast<RankedTensorType>().getRank() != 0))
-    return emitOpError() << "expects the return-type of select-region to be "
-                            "tensor<i1>, but got: "
-                         << selectResult[0].getType();
-
-  // P2.
-  Block& scatterBlock = getScatter().front();
-  SmallVector<TensorType> accumulatorSubshapes;
-  if (failed(hlo::verifyReducerShape(
-          this->getLoc(), scatterBlock,
-          {RankedTensorType::get({}, sourceType.getElementType())},
-          {initValueType},
-          /*numInputs=*/1, /*allowedDimensions=*/{},
-          /*allInputsUnranked=*/false, accumulatorSubshapes)))
-    return failure();
-
-  // P3.
-  // TODO: add missing tests of hlo::convert1DAttribute( for SelectAndScatterOp.
-  auto windowDimsOrErr = hlo::convert1DAttribute(getWindowDimensions(),
-                                                 getLoc(), "window_dimensions");
-  if (failed(windowDimsOrErr)) return failure();
-  if (operandType.hasRank()) {
-    if (operandType.getRank() !=
-        static_cast<int64_t>((*windowDimsOrErr).size()))
-      return emitOpError()
-             << "expects window-dimensions size == operand rank, but got "
-                "window-dimensions size: "
-             << (*windowDimsOrErr).size()
-             << " and operand-type: " << operandType
-             << " with rank = " << operandType.getRank() << ".";
-  }
-
-  // P4.
-  auto paddingOrErr = hlo::convertPaddingAttribute(getPadding(), getLoc());
-  if (failed(paddingOrErr)) return failure();
-
-  // TODO: add missing tests of hlo::convert1DAttribute( for SelectAndScatterOp.
-  auto windowStridesOrErr =
-      hlo::convert1DAttribute(getWindowStrides(), getLoc(), "window_strides");
-  if (failed(windowStridesOrErr)) return failure();
-  auto windowOrErr = hlo::verifyWindowAttributesAndInferWindowDimensions(
-      *windowDimsOrErr, *windowStridesOrErr, *paddingOrErr,
-      /*lhsDilation=*/{}, /*rhsDilation=*/{}, getLoc());
-  if (failed(windowOrErr)) return failure();
-
-  // P5.
-  if (!hlo::compatibleShapeAndElementType(operandType, resultType))
-    return emitOpError()
-           << "expects the return-type to match the operand-type, but got "
-           << resultType << " and " << operandType << " resp.";
-
-  // P6.
-  auto windowResultType =
-      inferSelectAndScatterOpReturnType(operandType, *windowOrErr);
-
-  if (!hlo::compatibleShapeAndElementType(windowResultType, sourceType,
-                                          /*ignoreFpPrecision=*/true))
-    return emitOpError() << "expects source-type to be " << windowResultType
-                         << ", but got" << sourceType;
-
-  return success();
+  return hlo::verifySelectAndScatterOp(getLoc(), getOperand(), getSource(),
+                                       getInitValue(), getWindowDimensions(),
+                                       getWindowStrides(), getPadding(),
+                                       getSelect(), getScatter());
 }
 
 //===----------------------------------------------------------------------===//
 // ScatterOp
 //===----------------------------------------------------------------------===//
 
-/*
- * We intend to verify the following properties:
- * P1. The 'update_window_dims' must be valid indices of 'updates' tensor.
- * P2. The 'inserted_window_dims' must be valid indices of 'operand' tensor.
- * P3. Check if the rank-of('operand') == size-of('update_window_dims') +
- *     size-of('inserted_window_dims')
- * P4. size-of('scatter_dims_to_operand_dims') =
- *         'scatter_indices'['index_vector_dim'] &
- *     'scatter_dims_to_operand_dims' must be valid indices of 'operand' tensor.
- */
-LogicalResult validateScatterDimensionNumbers(
-    ShapedType operandType, ArrayRef<int64_t> scatterIndicesShape,
-    ShapedType updateType, bool operandTypeRanked,
-    bool scatterIndicesTypeRanked, bool updatesTypeRanked,
-    ScatterDimensionNumbersAttr dimNumbers, Location loc) {
-  // P1.
-  auto updateWindowDims = to_vector(dimNumbers.getUpdateWindowDims());
-  if (!llvm::is_sorted(updateWindowDims))
-    return mlir::emitError(loc)
-           << "Expects update_window_dims to be sorted; got: ["
-           << updateWindowDims << "].";
-
-  if (hasDuplicates(updateWindowDims))
-    return mlir::emitError(loc)
-           << "Expects update_window_dims to not repeat; got: ["
-           << updateWindowDims << "].";
-
-  if (updatesTypeRanked) {
-    for (int64_t windowDim : updateWindowDims) {
-      if (windowDim < 0 || windowDim >= updateType.getRank()) {
-        return mlir::emitError(loc)
-               << "Expects each element of update_window_dims to be in range "
-                  "[0, "
-                  "rank-of('updates') i.e. [0, "
-               << updateType.getRank() << "). got: " << windowDim << ".";
-      }
-    }
-  }
-
-  // P2.
-  auto insertedWindowDims = to_vector(dimNumbers.getInsertedWindowDims());
-  if (!llvm::is_sorted(insertedWindowDims))
-    return mlir::emitError(loc)
-           << "Expects inserted_window_dims to be sorted; got: ["
-           << insertedWindowDims << "].";
-
-  if (hasDuplicates(insertedWindowDims))
-    return mlir::emitError(loc)
-           << "Expects inserted_window_dims to not repeat; got: ["
-           << insertedWindowDims << "].";
-
-  if (operandTypeRanked) {
-    for (int64_t insertedDim : insertedWindowDims) {
-      if (insertedDim < 0 || insertedDim >= operandType.getRank()) {
-        return mlir::emitError(loc)
-               << "Expects each element of inserted_window_dims to be in range "
-                  "[0, rank-of('operand') i.e. [0, "
-               << operandType.getRank() << "). got: " << insertedDim << ".";
-      }
-    }
-  }
-
-  // P3.
-  if (operandTypeRanked) {
-    auto windowSize = updateWindowDims.size() + insertedWindowDims.size();
-    if (operandType.getRank() != static_cast<int64_t>(windowSize))
-      return mlir::emitError(loc)
-             << "Expects rank-of operand to match "
-                "size-of('update_window_dims')  + "
-                "size-of('inserted_window_dims') i.e. "
-             << windowSize << " but got " << operandType.getRank() << ".";
-  }
-
-  // P4.
-  auto scatterDimsToOperandDims =
-      to_vector(dimNumbers.getScatterDimsToOperandDims());
-  auto indexVectorDim = dimNumbers.getIndexVectorDim();
-  if (scatterIndicesTypeRanked) {
-    if (!hlo::isDynamicDimSize(scatterIndicesShape[indexVectorDim]) &&
-        static_cast<int64_t>(scatterDimsToOperandDims.size()) !=
-            scatterIndicesShape[dimNumbers.getIndexVectorDim()])
-      return mlir::emitError(loc)
-             << "Scatter op has " << scatterDimsToOperandDims.size()
-             << " elements in scatter_dims_to_operand_dims and the bound of "
-                "dimension index_vector_dim="
-             << dimNumbers.getIndexVectorDim() << " of scatter_indices is "
-             << scatterIndicesShape[dimNumbers.getIndexVectorDim()]
-             << ". These two numbers must be equal.";
-  }
-
-  if (operandTypeRanked) {
-    for (int64_t i = 0;
-         i < static_cast<int64_t>(scatterDimsToOperandDims.size()); ++i) {
-      int64_t scatterDimToOperandDim = scatterDimsToOperandDims[i];
-      if (scatterDimToOperandDim < 0 ||
-          scatterDimToOperandDim >= operandType.getRank())
-        return mlir::emitError(loc)
-               << "Invalid scatter_dims_to_operand_dims mapping; domain is [0, "
-               << operandType.getRank() << "), got: " << i << "->"
-               << scatterDimToOperandDim << ".";
-    }
-  }
-
-  if (hasDuplicates(scatterDimsToOperandDims))
-    return mlir::emitError(loc)
-           << "Expects scatter_dims_to_operand_dims to not repeat; got: ["
-           << scatterDimsToOperandDims << "].";
-
-  return success();
+LogicalResult ScatterOp::inferReturnTypes(
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type>& inferredReturnTypes) {
+  ScatterOp::Adaptor adaptor(operands, attributes, regions);
+  return hlo::inferScatterOp(location, adaptor.getInputs(),
+                             inferredReturnTypes);
 }
-/*
- * We intend to verify the following properties:
- *  P0. scatter_indices argument must be an integral tensor. Enforced by ODS.
- *  P1. Scatter index leaf dimension must be within [0, rank(scatter_indices)"
- *      " + 1).
- *  P2. Verify reducer shape.
- *  P3. rank-of('updates[i]') == size-of('update_window_dims') +
- *      rank-of('scatter_indices') - 1, where 'scatter_indices' is expanded by a
- *      trailing 1 dimension if 'index_vector_dim' == rank-of('scatter_indices')
- *      for all values of `i`.
- *  P4. Validate the scatter-dimensions-numbers.
- *  P5. Valide the bounds of each of the 'updates' w.r.t the operands.
- *  P6. Validate the bounds of each of the 'updates' w.r.t the
- * 'scatter_indices'.
- *  P7. Check return types.
- */
+
 LogicalResult ScatterOp::verify() {
-  // Get the first operand and update, since variadic Scatter is not yet
-  // implemented
-  auto numOperands = getInputs().size();
-  auto scatterIndicesType =
-      getScatterIndices().getType().dyn_cast<TensorType>();
-
-  SmallVector<TensorType, 1> operandTypes =
-      llvm::to_vector(llvm::map_range(getInputs().getTypes(), [](Type type) {
-        return type.cast<TensorType>();
-      }));
-  SmallVector<TensorType, 1> updatesTypes =
-      llvm::to_vector(llvm::map_range(getUpdates().getTypes(), [](Type type) {
-        return type.cast<TensorType>();
-      }));
-  bool allOperandTypesRanked =
-      llvm::all_of(getInputs().getTypes(),
-                   [](Type type) { return type.isa<RankedTensorType>(); });
-  bool scatterIndicesTypeRanked = scatterIndicesType.isa<RankedTensorType>();
-
-  // P1.
-  int64_t indexVectorDim = getScatterDimensionNumbers().getIndexVectorDim();
-  if (scatterIndicesTypeRanked) {
-    if (indexVectorDim > scatterIndicesType.getRank() || indexVectorDim < 0)
-      return emitOpError()
-             << "expects scatter index leaf dimension to be within [0, "
-                "rank(scatter_indices) + 1."
-                " rank(scatter_indices) is "
-             << scatterIndicesType.getRank()
-             << " and scatter index leaf dimension is " << indexVectorDim
-             << ".";
-  }
-
-  // P2.
-  Block& block = getUpdateComputation().front();
-  SmallVector<TensorType> accumulatorSubshapes;
-  SmallVector<TensorType> inputTypes, initValueTypes;
-  for (int64_t i = 0; i < static_cast<int64_t>(numOperands); i++) {
-    inputTypes.push_back(operandTypes[i]);
-    initValueTypes.push_back(
-        RankedTensorType::get({}, updatesTypes[i].getElementType()));
-  }
-  if (failed(hlo::verifyReducerShape(
-          this->getLoc(), block, inputTypes, initValueTypes, numOperands,
-          /*allowedDimensions=*/{},
-          /*allInputsUnranked=*/!allOperandTypesRanked, accumulatorSubshapes)))
-    return failure();
-
-  // P3.
-  auto updateWindowDims = getScatterDimensionNumbers().getUpdateWindowDims();
-  SmallVector<int64_t> expandedScatterIndicesShape;
-  if (scatterIndicesTypeRanked) {
-    expandedScatterIndicesShape =
-        llvm::to_vector(scatterIndicesType.getShape());
-    if (static_cast<int64_t>(expandedScatterIndicesShape.size()) ==
-        indexVectorDim)
-      expandedScatterIndicesShape.push_back(1);
-  }
-
-  for (int64_t i = 0; i < static_cast<int64_t>(numOperands); i++) {
-    if (scatterIndicesTypeRanked && updatesTypes[i].isa<RankedTensorType>()) {
-      int64_t expectedUpdatesRank =
-          expandedScatterIndicesShape.size() - 1 + updateWindowDims.size();
-      if (updatesTypes[i].getRank() != expectedUpdatesRank)
-        return emitOpError()
-               << "expects updates tensor must be of rank "
-               << expectedUpdatesRank
-               << " ( == rank-of('scatter_indices') - 1 + "
-                  "size-of('update_window_dims'), where 'scatter_indices' is "
-                  "expanded by a trailing 1 dimension if 'index_vector_dim' == "
-                  "rank-of('scatter_indices')), but got "
-               << updatesTypes[i].getRank() << ".";
-    }
-  }
-
-  // P4.
-  for (int64_t i = 0; i < static_cast<int64_t>(numOperands); i++) {
-    if (failed(validateScatterDimensionNumbers(
-            operandTypes[i], expandedScatterIndicesShape, updatesTypes[i],
-            operandTypes[i].isa<RankedTensorType>(), scatterIndicesTypeRanked,
-            updatesTypes[i].isa<RankedTensorType>(),
-            getScatterDimensionNumbers(), getLoc())))
-      return failure();
-  }
-
-  // P5.
-  for (int64_t i = 0; i < static_cast<int64_t>(numOperands); i++) {
-    if (updatesTypes[i].isa<RankedTensorType>()) {
-      auto updatesShape = updatesTypes[i].getShape();
-      if (operandTypes[i].isa<RankedTensorType>()) {
-        auto operandShape = operandTypes[i].getShape();
-        auto insertedWindowDims =
-            getScatterDimensionNumbers().getInsertedWindowDims();
-
-        int64_t insertedDimsSeen = 0;
-        SmallVector<int64_t> maxUpdateSliceSizes;
-        const auto dimensionsSize = operandTypes[i].getRank();
-        maxUpdateSliceSizes.reserve(dimensionsSize);
-        for (int i = 0; i < dimensionsSize; ++i) {
-          if (insertedDimsSeen <
-                  static_cast<int64_t>(insertedWindowDims.size()) &&
-              insertedWindowDims[insertedDimsSeen] == i) {
-            ++insertedDimsSeen;
-          } else {
-            maxUpdateSliceSizes.push_back(operandShape[i]);
-          }
-        }
-
-        for (int64_t i = 0; i < static_cast<int64_t>(updateWindowDims.size());
-             ++i) {
-          auto updateWindowDim = updateWindowDims[i];
-
-          if (hlo::isDynamicDimSize(updatesShape[updateWindowDim]) ||
-              hlo::isDynamicDimSize(maxUpdateSliceSizes[i]))
-            continue;
-
-          if (updatesShape[updateWindowDim] > maxUpdateSliceSizes[i]) {
-            return emitOpError()
-                   << "expects bounds of the window dimensions of "
-                      "updates to not exceed the "
-                      "bounds of the corresponding dimensions of "
-                      "operand. For dimension "
-                   << updateWindowDim << ", updates bound is "
-                   << updatesShape[updateWindowDim] << ", operand bound is "
-                   << maxUpdateSliceSizes[i] << ".";
-          }
-        }
-      }
-
-      // P6.
-      if (scatterIndicesTypeRanked) {
-        int64_t scatterDimsSeen = 0;
-        for (int64_t i = 0; i < static_cast<int64_t>(updatesShape.size());
-             ++i) {
-          bool isUpdateWindowDim = std::binary_search(
-              updateWindowDims.begin(), updateWindowDims.end(), i);
-
-          if (isUpdateWindowDim) continue;
-          if (scatterDimsSeen == indexVectorDim) ++scatterDimsSeen;
-
-          if (!hlo::isDynamicDimSize(updatesShape[i]) &&
-              !hlo::isDynamicDimSize(
-                  expandedScatterIndicesShape[scatterDimsSeen]) &&
-              (updatesShape[i] !=
-               expandedScatterIndicesShape[scatterDimsSeen])) {
-            return emitOpError()
-                   << "expects bounds of the scatter dimensions of "
-                      "updates to be same as the "
-                      "bounds of the corresponding dimensions of "
-                      "scatter indices. For "
-                      "scatter dimension "
-                   << i << ", updates bound is " << updatesShape[i]
-                   << " , scatter_indices "
-                      "bound is "
-                   << expandedScatterIndicesShape[scatterDimsSeen] << ".";
-          }
-          ++scatterDimsSeen;
-        }
-      }
-    }
-  }
-
-  // P7.
-  for (int64_t i = 0; i < static_cast<int64_t>(numOperands); i++) {
-    if (!hlo::compatibleShapeAndElementType(operandTypes[i],
-                                            getResult(i).getType()))
-      return emitOpError()
-             << "expects the return type to be same as the operand type: "
-             << operandTypes[i] << ", but got " << getResult(i).getType()
-             << ".";
-  }
-
-  return success();
+  return hlo::verifyScatterOp(
+      getLoc(), getInputs(), getScatterIndices(), getUpdates(),
+      getScatterDimensionNumbers().getUpdateWindowDims(),
+      getScatterDimensionNumbers().getInsertedWindowDims(),
+      getScatterDimensionNumbers().getScatterDimsToOperandDims(),
+      getScatterDimensionNumbers().getIndexVectorDim(), getUpdateComputation());
 }
 
 //===----------------------------------------------------------------------===//
@@ -4335,12 +2371,15 @@ LogicalResult ScatterOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult WhileOp::inferReturnTypes(
-    MLIRContext*, Optional<Location> location, ValueRange operands,
+    MLIRContext*, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type>& inferredReturnTypes) {
   WhileOp::Adaptor adaptor(operands, attributes, regions);
-  return hlo::inferWhileOp(location, adaptor.getOperand(), adaptor.getCond(),
-                           adaptor.getBody(), inferredReturnTypes);
+  return hlo::inferWhileOp(location, adaptor.getOperand(), inferredReturnTypes);
+}
+
+LogicalResult WhileOp::verify() {
+  return hlo::verifyWhileOp(getLoc(), getOperand(), getCond(), getBody());
 }
 
 /// Print a `while` op.
@@ -4410,43 +2449,37 @@ ParseResult WhileOp::parse(OpAsmParser& parser, OperationState& result) {
 }
 
 LogicalResult UniformDequantizeOp::inferReturnTypeComponents(
-    MLIRContext*, Optional<Location> /*location*/, ValueShapeRange operands,
+    MLIRContext*, std::optional<Location> location, ValueShapeRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
   UniformDequantizeOp::Adaptor adaptor(operands, attributes, regions);
-  auto operandType = (*operands.begin()).getType().cast<ShapedType>();
-  // Trait HLO_QuantizedIntTensor in ODS guarantees QuantizedType;
-  auto quantType = operandType.getElementType().cast<quant::QuantizedType>();
-  auto shape = operandType.dyn_cast<ShapedType>().getShape();
-  inferredReturnShapes.emplace_back(shape, quantType.getExpressedType());
-  return success();
+  return hlo::inferUniformDequantizeOp(location, adaptor.getOperand(),
+                                       inferredReturnShapes);
 }
 
 }  // namespace stablehlo
 }  // namespace mlir
 
-// clang-format off
-using mlir::hlo::printSameOperandsAndResultType;
-using mlir::hlo::parseSameOperandsAndResultType;
-using mlir::hlo::printVariadicSameOperandsAndResultType;
-using mlir::hlo::parseVariadicSameOperandsAndResultType;
-using mlir::hlo::printVariadicOperandWithAttribute;
-using mlir::hlo::parseVariadicOperandWithAttribute;
-using mlir::hlo::printComplexOpType;
 using mlir::hlo::parseComplexOpType;
-using mlir::hlo::printPairwiseOpType;
-using mlir::hlo::parsePairwiseOpType;
-using mlir::hlo::printSelectOpType;
-using mlir::hlo::parseSelectOpType;
-using mlir::hlo::printTupleOpType;
-using mlir::hlo::parseTupleOpType;
-using mlir::hlo::printCustomCallTarget;
 using mlir::hlo::parseCustomCallTarget;
-using mlir::hlo::printDenseI64Array;
 using mlir::hlo::parseDenseI64Array;
-using mlir::hlo::printExponentMantissa;
 using mlir::hlo::parseExponentMantissa;
-// clang-format on
+using mlir::hlo::parsePairwiseOpType;
+using mlir::hlo::parseSameOperandsAndResultType;
+using mlir::hlo::parseSelectOpType;
+using mlir::hlo::parseTupleOpType;
+using mlir::hlo::parseVariadicOperandWithAttribute;
+using mlir::hlo::parseVariadicSameOperandsAndResultType;
+using mlir::hlo::printComplexOpType;
+using mlir::hlo::printCustomCallTarget;
+using mlir::hlo::printDenseI64Array;
+using mlir::hlo::printExponentMantissa;
+using mlir::hlo::printPairwiseOpType;
+using mlir::hlo::printSameOperandsAndResultType;
+using mlir::hlo::printSelectOpType;
+using mlir::hlo::printTupleOpType;
+using mlir::hlo::printVariadicOperandWithAttribute;
+using mlir::hlo::printVariadicSameOperandsAndResultType;
 
 #define GET_OP_CLASSES
 #include "stablehlo/dialect/StablehloOps.cpp.inc"
@@ -4459,7 +2492,7 @@ namespace stablehlo {
 //===----------------------------------------------------------------------===//
 
 namespace {
-struct HLOInlinerInterface : public DialectInlinerInterface {
+struct StablehloDialectInlinerInterface : public DialectInlinerInterface {
   using DialectInlinerInterface::DialectInlinerInterface;
 
   // Allow all call operations to be inlined.
@@ -4470,21 +2503,26 @@ struct HLOInlinerInterface : public DialectInlinerInterface {
   // We don't have any special restrictions on what can be inlined into
   // destination regions (e.g. while/conditional bodies). Always allow it.
   bool isLegalToInline(Region* dest, Region* src, bool wouldBeCloned,
-                       BlockAndValueMapping& valueMapping) const final {
+                       IRMapping& valueMapping) const final {
     return true;
   }
   // Operations in StableHLO dialect are always legal to inline since they are
   // pure.
-  bool isLegalToInline(Operation*, Region*, bool,
-                       BlockAndValueMapping&) const final {
+  bool isLegalToInline(Operation*, Region*, bool, IRMapping&) const final {
     return true;
   }
 };
 
-struct HLOBoundedDialectInterface : public hlo::BoundedDialectInterface {
-  using BoundedDialectInterface::BoundedDialectInterface;
+struct StablehloHloDialectInterface : public hlo::HloDialectInterface {
+  using HloDialectInterface::HloDialectInterface;
 
-  Attribute createBoundedAttr(ArrayRef<int64_t> bounds) const override {
+  Type createTokenType() const override {
+    return TokenType::get(getDialect()->getContext());
+  }
+
+  bool isTokenType(Type type) const override { return type.isa<TokenType>(); }
+
+  Attribute createTypeExtensions(ArrayRef<int64_t> bounds) const override {
     return TypeExtensionsAttr::get(getDialect()->getContext(), bounds);
   }
 };
@@ -4500,8 +2538,8 @@ StablehloDialect::StablehloDialect(MLIRContext* context)
 #define GET_OP_LIST
 #include "stablehlo/dialect/StablehloOps.cpp.inc"
       >();
-  addInterfaces<HLOInlinerInterface>();
-  addInterfaces<HLOBoundedDialectInterface>();
+  addInterfaces<StablehloDialectInlinerInterface>();
+  addInterfaces<StablehloHloDialectInterface>();
   addBytecodeInterface(this);
   addTypes<TokenType>();
   addAttributes<
@@ -5260,11 +3298,11 @@ void printWindowAttribute(OpAsmPrinter& p, DenseElementsAttr attribute) {
 }  // namespace
 
 void printWindowAttributes(OpAsmPrinter& p, Operation* /*op*/,
-                           llvm::Optional<DenseIntElementsAttr> windowStrides,
-                           llvm::Optional<DenseIntElementsAttr> padding,
-                           llvm::Optional<DenseIntElementsAttr> lhsDilation,
-                           llvm::Optional<DenseIntElementsAttr> rhsDilation,
-                           llvm::Optional<DenseElementsAttr> windowReversal) {
+                           std::optional<DenseIntElementsAttr> windowStrides,
+                           std::optional<DenseIntElementsAttr> padding,
+                           std::optional<DenseIntElementsAttr> lhsDilation,
+                           std::optional<DenseIntElementsAttr> rhsDilation,
+                           std::optional<DenseElementsAttr> windowReversal) {
   using pair_t = std::pair<DenseElementsAttr, StringRef>;
   std::array<pair_t, 5> printedAttributes = {{
       {windowStrides ? *windowStrides : nullptr, "stride"},
@@ -5389,7 +3427,7 @@ ParseResult parseWindowAttributes(OpAsmParser& parser,
 // arguments.
 static void buildSortComparisonBody(llvm::ArrayRef<Type> elementTypes,
                                     ComparisonDirection direction,
-                                    llvm::Optional<StringRef> compareType,
+                                    std::optional<StringRef> compareType,
                                     Region* body, OpBuilder* builder) {
   OpBuilder::InsertionGuard insertionPointGurad(*builder);
 
@@ -5423,12 +3461,13 @@ SortOp createSortOp(PatternRewriter* rewriter, const Location& loc,
 
   // Use TOTALORDER comparison type instead of the default comparison if the
   // element type is of type float.
-  llvm::Optional<StringRef> compareType = llvm::None;
-  for (auto const& elementType : elementTypes)
+  std::optional<StringRef> compareType = std::nullopt;
+  for (const auto& elementType : elementTypes) {
     if (elementType.isa<FloatType>()) {
       compareType.emplace("TOTALORDER");
       break;
     }
+  }
   buildSortComparisonBody(elementTypes, direction, compareType,
                           &sortOp.getComparator(), rewriter);
   return sortOp;

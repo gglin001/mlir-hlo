@@ -59,7 +59,7 @@ void printSameOperandsAndResultType(OpAsmPrinter& p, Operation* op,
                                     OpTypes... types) {
   static_assert(sizeof...(types) > 0);  // Must be non empty, must have result
   SmallVector<Type> typesVec{types...};
-  ArrayRef<Type> typesRef = makeArrayRef(typesVec);
+  ArrayRef<Type> typesRef = ArrayRef(typesVec);
   return detail::printSameOperandsAndResultTypeImpl(
       p, op, typesRef.drop_back(1), typesRef.back());
 }
@@ -69,7 +69,7 @@ ParseResult parseSameOperandsAndResultType(OpAsmParser& parser,
                                            OpTypes&... types) {
   static_assert(sizeof...(types) > 0);  // Must be non empty, must have result
   SmallVector<Type*> typesVec{&types...};
-  ArrayRef<Type*> typesRef = makeArrayRef(typesVec);
+  ArrayRef<Type*> typesRef = ArrayRef(typesVec);
   return detail::parseSameOperandsAndResultTypeImpl(
       parser, typesRef.drop_back(1), *typesRef.back());
 }
@@ -180,12 +180,12 @@ ParseResult parseDenseI64Array(OpAsmParser& parser, DenseIntElementsAttr& attr);
 //   Custom:
 //     [1, ?]
 std::string dimSizeToString(int64_t dimSize);
+std::string dimSizesToString(llvm::ArrayRef<int64_t> dimSize);
 
 void printDimSizes(AsmPrinter& p, llvm::ArrayRef<int64_t> dimSizes);
 
 FailureOr<SmallVector<int64_t>> parseDimSizes(AsmParser& parser);
-ParseResult parseDimSizes(AsmParser& parser,
-                          FailureOr<SmallVector<int64_t>>& dimSizes);
+ParseResult parseDimSizes(AsmParser& parser, SmallVector<int64_t>& dimSizes);
 
 // ExponentMantissa - Abbreviated printing of exponent and mantissa as e#m#.
 //

@@ -7,7 +7,7 @@
 // trip of the a bytecoded version of this file. If the outputs do not match,
 // the test will fail.
 //
-// Additionally this test will fail if any ops are not implemented on read or 
+// Additionally this test will fail if any ops are not implemented on read or
 // write. This is accomplished by calling `stablehlo-opt` with the
 // `-debug-only=stablehlo-bytecode` trace enabled. If any type or attr is not
 // implemented, a message '***Not Implemented' is logged. If there are no logs
@@ -60,7 +60,7 @@ func.func @test_all_reduce2(%arg0: tensor<10xf32>) -> tensor<10xf32> {
     "stablehlo.return"(%max) : (tensor<f32>) -> ()
   })
   {
-    replica_groups = dense<[[0, 2, 4, -1], [1, 3, 5, 7]]> : tensor<2x4xi64>,
+    replica_groups = dense<[[0, 2, 4, -1], [1, 3, 5, 6]]> : tensor<2x4xi64>,
     channel_handle = #stablehlo.channel_handle<
       handle = 5,
       type = 2
@@ -274,9 +274,21 @@ func.func @test_cross_replica_sum(%arg0: tensor<10xf32>) -> tensor<10xf32> {
   func.return %1 : tensor<10xf32>
 }
 
-func.func @test_custom_call(%arg0: tensor<2x3xf32>, %arg1: tensor<5x5xf32>) -> tensor<1x2x3xf32> {
-  %0 = "stablehlo.custom_call"(%arg0, %arg1) {api_version = 2 : i32, backend_config = "bar", call_target_name = "foo", has_side_effect = true} : (tensor<2x3xf32>, tensor<5x5xf32>) -> tensor<1x2x3xf32>
-  func.return %0 : tensor<1x2x3xf32>
+func.func @test_custom_call(%arg0: tensor<f32>) -> tensor<f32> {
+    %0 = "stablehlo.custom_call"(%arg0) {
+    call_target_name = "foo",
+    has_side_effect = false,
+    backend_config = "",
+    api_version = 2 : i32,
+    called_computations = [@foo],
+    operand_layouts = [dense<> : tensor<0xindex>],
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [],
+                                 operand_index = 0,
+                                 operand_tuple_indices = []>],
+    result_layouts = [dense<> : tensor<0xindex>]
+  } : (tensor<f32>) -> tensor<f32>
+  func.return %0 : tensor<f32>
 }
 
 // The following op sharding is used:
@@ -666,12 +678,11 @@ func.func @test_set_dimension_size(%arg: tensor<4x4xf32>, %size: tensor<i32>) ->
   func.return %0 : tensor<4x4xf32>
 }
 
-func.func @test_shift(%arg0: tensor<4xi32>, %arg1: tensor<4xi32>) -> (tensor<4xi32>, tensor<4xi32>, tensor<4xi32>, tensor<4xi32>) {
-  %0 = stablehlo.atan2 %arg0, %arg1 : tensor<4xi32>
-  %1 = stablehlo.shift_left %arg0, %arg1 : tensor<4xi32>
-  %2 = stablehlo.shift_right_arithmetic %arg0, %arg1 : tensor<4xi32>
-  %3 = stablehlo.shift_right_logical %arg0, %arg1 : tensor<4xi32>
-  func.return %0, %1, %2, %3 : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>, tensor<4xi32>
+func.func @test_shift(%arg0: tensor<4xi32>, %arg1: tensor<4xi32>) -> (tensor<4xi32>, tensor<4xi32>, tensor<4xi32>) {
+  %0 = stablehlo.shift_left %arg0, %arg1 : tensor<4xi32>
+  %1 = stablehlo.shift_right_arithmetic %arg0, %arg1 : tensor<4xi32>
+  %2 = stablehlo.shift_right_logical %arg0, %arg1 : tensor<4xi32>
+  func.return %0, %1, %2 : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>
 }
 
 func.func @test_slice(%arg: tensor<3x4xi32>) -> tensor<1x2xi32> {

@@ -64,7 +64,7 @@ def StableHLO_DotDimensionNumbers : AttrDef<StableHLO_Dialect, "DotDimensionNumb
   let hasCustomAssemblyFormat = 1;
 }
 
-def OutputOperandAlias : AttrDef<StableHLO_Dialect, "OutputOperandAlias"> {
+def StableHLO_OutputOperandAlias : AttrDef<StableHLO_Dialect, "OutputOperandAlias"> {
   let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "output_operand_alias";
   let summary =
@@ -152,8 +152,6 @@ def StableHLO_ChannelHandle : AttrDef<StableHLO_Dialect, "ChannelHandle"> {
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
-// Note: This is an experimental attribute and shouldn't be relied upon for
-// production.
 def StableHLO_TypeExtensions : AttrDef<StableHLO_Dialect, "TypeExtensions", [
     DeclareAttrInterfaceMethods<VerifiableTensorEncoding>,
     DeclareAttrInterfaceMethods<HLO_BoundedAttrInterface>]> {

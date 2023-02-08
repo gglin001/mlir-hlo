@@ -1,9 +1,8 @@
 # Interpreter Design
 
-
 ## Data Model
 
-[StableHLO programs](spec_draft.md#programs) are computations over tensors
+[StableHLO programs](spec.md#programs) are computations over tensors
 (n-dimensional arrays), which, in the current model, are implemented using class
 `Tensor`. The underlying storage class for a `Tensor` object, `detail::Buffer`,
 stores the `mlir::ShapedType` of the tensor along with a
@@ -17,10 +16,11 @@ discriminated union holding one of `APInt`, `APFloat` or `pair<APFloat,APFloat>`
 for storage. The last one is used for storing elements with complex types.
 
 `Tensor` class has the following APIs to interact with its individual elements:
-  - `Element Tensor::get(llvm::ArrayRef<int64_t> index)`: To extract an
-     individual tensor element at multi-dimensional index `index` as `Element`
-     object.
-  - `void Tensor::set(llvm::ArrayRef<int64_t> index, Element element);`:
+
+- `Element Tensor::get(llvm::ArrayRef<int64_t> index)`: To extract an
+  individual tensor element at multi-dimensional index `index` as `Element`
+  object.
+- `void Tensor::set(llvm::ArrayRef<int64_t> index, Element element);`:
   To update an `Element` object `element` into a tensor at multi-dimensional
   index `index`.
 
@@ -31,14 +31,15 @@ The entry function to the interpreter is
 ```C++
 SmallVector<Tensor> eval(func::FuncOp func, ArrayRef<Tensor> args);
 ```
+
 which does the following:
 
 1. Tracks the SSA arguments of `func` and their associated runtime `Tensor`
    values, provided in `args`, using a symbol table map, M.
 2. Foreach op within `func` in their SSACFG order:
-   * Invokes `eval` on op. For each SSA operand of the op, extract its
-  runtime value from M to be provided as argument to the `eval` invocation.
-   * Tracks the SSA result(s) of the op and the evaluated value in M.
+   - Invokes `eval` on op. For each SSA operand of the op, extract its
+     runtime value from M to be provided as argument to the `eval` invocation.
+   - Tracks the SSA result(s) of the op and the evaluated value in M.
 
 The op-level `eval` as mentioned in (2) is responsible for implementing the
 execution semantics of the op. Following is an example for `stablehlo::AddOp`.
@@ -71,7 +72,8 @@ values. The following code snippet demonstrates an idea of the implementation
 for folding `stablehlo::AddOp` with floating-point typed operands:
 
 ```C++
-OpFoldResult AddOp::fold(ArrayRef<Attribute> attrs) {
+OpFoldResult AddOp::fold(FoldAdaptor adaptor) {
+  auto attrs = adaptor.getOperands();
   DenseElementsAttr lhsData = attrs[0].dyn_cast<DenseElementsAttr>();
   DenseElementsAttr rhsData = attrs[1].dyn_cast<DenseElementsAttr>();
   if (!lhsData || !rhsData) return {};
@@ -130,3 +132,88 @@ dedicated test-suite, consisting of several tests exercising various runtime
 behaviors, for each StableHLO Op. The tests can be found
 [here](https://github.com/openxla/stablehlo/tree/main/stablehlo/tests/) (e.g.
 interpret\_\*.mlir).
+
+### Testing guidelines
+
+**(G1) Do we need to test for all the supported types for every op?**
+
+We can use a combination of following rules to decide it:
+
+1. While implementing an op, if there exists code in the corresponding `eval`
+   function to handle a particular type, then it is imperative to have test(s)
+   to cover for that type. As an example, for `add` op, there is exclusive code
+   to handle integer, boolean, floating-point, and complex types, and hence we
+   need one test for each category of types.
+
+2. If a set of types is handled uniformly in the corresponding `eval` function,
+   then a single test for all those types should be sufficient. As an example,
+   for `add` op, all the variants of integer types (`si4`, `u4`, `si8`, `u8` and
+   so on) are handled alike using `llvm::APInt` APIs, and hence we can skip
+   adding tests for each of those variants, and instead, add a single
+   representative test. To avoid ambiguity in selecting the representative, we
+   should use the following guidelines:
+
+     - If all the types, handled uniformly, have the same primitive type
+       (i.e., if all are integer, or floating-point, or complex types), then
+       choose the one with maximum bit-width.
+     - If all the types, handled uniformly, have a mix of primitive types, then
+       choose the one with the following primitive type, in decreasing order of
+       preference: integer, floating-point, boolean, complex.
+
+**(G2) How do we decide on the number of tests needed to cover an op's
+behavior?**
+
+The goal is to comprehensively cover the logic of the interpreter for the op
+(i.e. all corner cases of the implementation) with a minimal number of tests.
+Minimizing the number of tests is important for maintainability. The fewer tests
+we have, the easier it is to review them and to make sure that they
+comprehensively cover the op. As a result, we expect that most of the simpler
+ops will end up having just one test. If due to some good reason comprehensive
+coverage is impractical, then it is fine to stop at >= 90%. This will be decided
+on case-by-case basis during pull request review.
+
+**(G3) How about adding tests dedicated for testing the interpreter
+infrastructure?**
+
+The interpreter infrastructure is mostly straightforward and can be added to
+our trust base. The only non-trivial part is how various types are packed into
+and unpacked from the underlying interpreter storage. As discussed in (G1), we
+will be testing only those types of an op which are handled differently. With
+that it is possible that the packing/un-packing code, corresponding to different
+variants of integer/floating-point types, might not get fully covered during
+testing. To ensure that we can choose an op, like `constant`, which supports all
+the StableHLO element types and write exhaustive tests.
+
+**(G4) If the implementation of an op depends other ops, should be write tests
+for the latter?**
+
+No. For example, the implementation of `batch_norm_grad` can be based on
+`divide`, `subtract`, `multiply` and others, we should avoid testing the latter
+ops while testing the former.
+
+**(G5) Should we write tests to exercise the implementation-defined / undefined
+behaviors?**
+
+We should not write tests which exercise the implementation defined or
+undefined behaviors of the op. Tests exercising implementation defined behaviors
+demonstrate a local behavior of the interpreter which should not be
+generalized. Tests exercising undefined behavior do not contribute towards
+the understanding of the op's behavior.
+
+**(G6) While writing tests for floating-point type, to what precision the
+results need to be specified in llvm lit checks?**
+
+The current lit-based interpreter testing fails if the result is computed with a
+different precision than what is mentioned in the lit CHECK directives. As a
+quick-fix, we allow the lit checks to measure the accuracy up to an arbitrary
+places after the decimal point. But the solution is far from ideal. We plan to
+resolve it using [ticket](https://github.com/openxla/stablehlo/issues/268).
+
+**(G7) Anything about the coding-style of the tests?**
+
+1. Make sure to use the actual name of the inputs/outputs instead of defaulting
+   to SSA values (e.g. %0, %1, etc.)
+1. Make sure the tests use pretty-printed format, if it exists.
+
+**(G8) Should we include the example already provided in the spec?**
+Yes (for completeness of testing).
