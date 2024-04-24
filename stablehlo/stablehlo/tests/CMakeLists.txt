@@ -14,25 +14,19 @@
 # limitations under the License.
 
 configure_lit_site_cfg(
-        ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
-        ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
-        MAIN_CONFIG
-        ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
+  MAIN_CONFIG
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
-
-set(STABLEHLO_TEST_DEPENDS
-        FileCheck count not
-        stablehlo-opt
-        stablehlo-interpreter
+add_lit_testsuite(check-stablehlo-tests "Running the tests/ suite"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS
+  FileCheck not
+  stablehlo-opt
+  stablehlo-translate
 )
-add_lit_testsuite(check-stablehlo-lit "Running the StableHLO regression tests"
-        ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS ${STABLEHLO_TEST_DEPENDS}
-        )
-set_target_properties(check-stablehlo-lit PROPERTIES FOLDER "Tests")
-add_lit_testsuites(STABLEHLO_SUITE ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${STABLEHLO_TEST_DEPENDS})
-
-add_dependencies(check-stablehlo check-stablehlo-lit)
+add_dependencies(check-stablehlo-quick check-stablehlo-tests)
 
 set(LLVM_TARGET_DEFINITIONS TestUtils.td)
 mlir_tablegen(TestUtils.h.inc -gen-pass-decls -name HloTest)
@@ -54,4 +48,24 @@ add_mlir_library(StablehloTestUtils
   MLIRSupport
   MLIRTransformUtils
   StablehloAssemblyFormat
+)
+
+set(LLVM_TARGET_DEFINITIONS CheckOps.td)
+mlir_tablegen(CheckOps.h.inc -gen-op-decls)
+mlir_tablegen(CheckOps.cpp.inc -gen-op-defs)
+add_public_tablegen_target(CheckOpsIncGen)
+add_dependencies(mlir-headers CheckOpsIncGen)
+
+add_mlir_dialect_library(CheckOps
+  PARTIAL_SOURCES_INTENDED
+  CheckOps.cpp
+
+  DEPENDS
+  CheckOpsIncGen
+
+  LINK_LIBS PUBLIC
+  StablehloReferenceNumPy
+  StablehloReferenceTensor
+  MLIRIR
+  MLIRSupport
 )

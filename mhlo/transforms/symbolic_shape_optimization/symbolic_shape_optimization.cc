@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
@@ -79,8 +80,8 @@ struct SimplifyBroadcasts : public mlir::OpRewritePattern<shape::BroadcastOp> {
     for (const auto &sInfo : shapesInfo) rank = std::max(rank, sInfo.size());
 
     // Compute broadcast symbolically.
-    SmallVector<Optional<SymbolicBroadcastDimension>> symResult(rank,
-                                                                std::nullopt);
+    SmallVector<std::optional<SymbolicBroadcastDimension>> symResult(
+        rank, std::nullopt);
     for (const auto &sInfo : llvm::enumerate(shapesInfo)) {
       size_t dimOffset = rank - sInfo.value().size();
       for (const auto &symExpr : llvm::enumerate(sInfo.value())) {
@@ -113,8 +114,8 @@ struct SimplifyBroadcasts : public mlir::OpRewritePattern<shape::BroadcastOp> {
         llvm::map_range(symResult, [&](const auto &symResultDim) {
           // If we know the dimension statically, use a constant.
           if (!symResultDim) return findOrCreateConstant(1);
-          if (auto cexpr = symResultDim->expr.expr
-                               .template dyn_cast<AffineConstantExpr>()) {
+          if (auto cexpr =
+                  dyn_cast<AffineConstantExpr>(symResultDim->expr.expr)) {
             return findOrCreateConstant(cexpr.getValue());
           }
 
@@ -208,12 +209,12 @@ struct AnnotateExpandingDimensionsInDynamicBroadcastInDim
     }
 
     // Annotate op in place.
-    rewriter.startRootUpdate(op);
+    rewriter.startOpModification(op);
     op.setKnownExpandingDimensionsAttr(
         rewriter.getI64TensorAttr(knownExpandingDims.takeVector()));
     op.setKnownNonexpandingDimensionsAttr(
         rewriter.getI64TensorAttr(knownNonexpandingDims.takeVector()));
-    rewriter.finalizeRootUpdate(op);
+    rewriter.finalizeOpModification(op);
     return success();
   }
 };
@@ -243,16 +244,16 @@ struct RemoveComputeReshapeShape final
 bool isProduct(AffineExpr expr,
                llvm::function_ref<void(AffineConstantExpr)> cbkConstantFactor,
                llvm::function_ref<void(AffineSymbolExpr)> cbkSymbolicFactor) {
-  auto binExpr = expr.dyn_cast<AffineBinaryOpExpr>();
+  auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr);
   if (binExpr && binExpr.getKind() == AffineExprKind::Mul) {
     return isProduct(binExpr.getLHS(), cbkConstantFactor, cbkSymbolicFactor) &&
            isProduct(binExpr.getRHS(), cbkConstantFactor, cbkSymbolicFactor);
   }
-  if (auto symExpr = expr.dyn_cast<AffineSymbolExpr>()) {
+  if (auto symExpr = dyn_cast<AffineSymbolExpr>(expr)) {
     cbkSymbolicFactor(symExpr);
     return true;
   }
-  if (auto constExpr = expr.dyn_cast<AffineConstantExpr>()) {
+  if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     cbkConstantFactor(constExpr);
     return true;
   }
@@ -630,7 +631,7 @@ SmallVector<int64_t> concretizeOperandShape(
   for (auto it : llvm::zip(operandShape, operandShapeInfo)) {
     auto dimSize = std::get<0>(it);
     auto sExpr = std::get<1>(it);
-    if (auto cexpr = sExpr.expr.dyn_cast<AffineConstantExpr>()) {
+    if (auto cexpr = dyn_cast<AffineConstantExpr>(sExpr.expr)) {
       int64_t alsoDimSize = cexpr.getValue();
       assert((ShapedType::isDynamic(dimSize) || dimSize == alsoDimSize) &&
              "expect shape analysis result to be compatible with type");
@@ -790,9 +791,9 @@ struct CstrBroadcastableOpLowering
 
 // Returns a shape tensor if the shapes can be broadcasted to a known shape.
 // Will either return one of the shapes or a generated mix of the shapes.
-llvm::Optional<Value> simplifyBroadcast(ShapeComponentAnalysis &analysis,
-                                        ValueRange shapes, Location loc,
-                                        OpBuilder *builder) {
+std::optional<Value> simplifyBroadcast(ShapeComponentAnalysis &analysis,
+                                       ValueRange shapes, Location loc,
+                                       OpBuilder *builder) {
   // First find the input shape with the largest rank.
   SmallVector<ArrayRef<ShapeComponentAnalysis::SymbolicExpr>> shapesFound;
   size_t maxRank = 0;

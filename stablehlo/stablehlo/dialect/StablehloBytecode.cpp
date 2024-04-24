@@ -31,7 +31,7 @@ limitations under the License.
 //
 // Extract after function name, remove namespace.
 //   Called: write(mlir::stablehlo::TokenType, mlir::DialectBytecodeWriter ...
-//   ***Not Implemened: write(...
+//   ***Not Implemented: write(...
 #define _EXTRACT_AFTER(a, b) \
   llvm::StringRef(a).substr(llvm::StringRef(a).find(b))
 
@@ -65,13 +65,8 @@ namespace stablehlo_encoding {
 enum AttributeCode {
   // TO ADD ATTRIBUTE: Add an enum value with doc string for new attr.
 
-  ///   ArgResultAliasAttr {
-  ///     argTupleIndices: svarint[]
-  ///     resultIndex: svarint
-  ///     resultIndex: svarint[]
-  ///     isMustAlias: varint
-  ///   }
-  kArgResultAliasAttr = 0,
+  ///   ArgResultAliasAttr (obsolete)
+  // kArgResultAliasAttr = 0,
 
   ///   ChannelHandleAttr {
   ///     handle: svarint
@@ -207,8 +202,6 @@ class StablehloBytecodeInterface : public BytecodeDialectInterface {
 
   // TO ADD ATTRIBUTE: Include a read method for each attribute in StableHLO
   // Ex: SomeAttr readSomeAttr(DialectBytecodeReader &reader) const;
-  ArgResultAliasAttr readArgResultAliasAttr(
-      DialectBytecodeReader &reader) const;
   ChannelHandleAttr readChannelHandleAttr(DialectBytecodeReader &reader) const;
   ComparisonDirectionAttr readComparisonDirectionAttr(
       DialectBytecodeReader &reader) const;
@@ -235,7 +228,6 @@ class StablehloBytecodeInterface : public BytecodeDialectInterface {
 
   // TO ADD ATTRIBUTE: Include a write method for each attribute in StableHLO
   // Ex: void write(SomeAttr attr, DialectBytecodeWriter &writer) const;
-  void write(ArgResultAliasAttr attr, DialectBytecodeWriter &writer) const;
   void write(ChannelHandleAttr attr, DialectBytecodeWriter &writer) const;
   void write(ComparisonDirectionAttr attr, DialectBytecodeWriter &writer) const;
   void write(ComparisonTypeAttr attr, DialectBytecodeWriter &writer) const;
@@ -270,6 +262,14 @@ class StablehloBytecodeInterface : public BytecodeDialectInterface {
   // TO ADD TYPE: Include a write method for each type in StableHLO
   // Ex: void write(SomeType attr, DialectBytecodeWriter &writer) const;
   void write(TokenType type, DialectBytecodeWriter &writer) const;
+
+  //===--------------------------------------------------------------------===//
+  // Version
+
+  std::unique_ptr<DialectVersion> readVersion(
+      DialectBytecodeReader &reader) const override final;
+
+  void writeVersion(DialectBytecodeWriter &writer) const override final;
 };
 
 //===----------------------------------------------------------------------===//
@@ -282,8 +282,6 @@ Attribute StablehloBytecodeInterface::readAttribute(
   uint64_t code;
   if (failed(reader.readVarInt(code))) return Attribute();
   switch (code) {
-    case stablehlo_encoding::kArgResultAliasAttr:
-      return readArgResultAliasAttr(reader);
     case stablehlo_encoding::kChannelHandleAttr:
       return readChannelHandleAttr(reader);
     case stablehlo_encoding::kComparisonDirectionAttr:
@@ -324,12 +322,11 @@ Attribute StablehloBytecodeInterface::readAttribute(
 LogicalResult StablehloBytecodeInterface::writeAttribute(
     Attribute attr, DialectBytecodeWriter &writer) const {
   return TypeSwitch<Attribute, LogicalResult>(attr)
-      .Case<ArgResultAliasAttr, ChannelHandleAttr, ComparisonDirectionAttr,
-            ComparisonTypeAttr, ConvDimensionNumbersAttr,
-            DotDimensionNumbersAttr, FftTypeAttr, GatherDimensionNumbersAttr,
-            OutputOperandAliasAttr, PrecisionAttr, RngAlgorithmAttr,
-            RngDistributionAttr, ScatterDimensionNumbersAttr, TransposeAttr,
-            TypeExtensionsAttr>([&](auto attr) {
+      .Case<ChannelHandleAttr, ComparisonDirectionAttr, ComparisonTypeAttr,
+            ConvDimensionNumbersAttr, DotDimensionNumbersAttr, FftTypeAttr,
+            GatherDimensionNumbersAttr, OutputOperandAliasAttr, PrecisionAttr,
+            RngAlgorithmAttr, RngDistributionAttr, ScatterDimensionNumbersAttr,
+            TransposeAttr, TypeExtensionsAttr>([&](auto attr) {
         LOG_WRITE_CALL;
         write(attr, writer);
         return success();
@@ -341,38 +338,6 @@ LogicalResult StablehloBytecodeInterface::writeAttribute(
 }
 
 //===----------------------------------------------------------------------===//
-// ArgResultAliasAttr
-
-ArgResultAliasAttr StablehloBytecodeInterface::readArgResultAliasAttr(
-    DialectBytecodeReader &reader) const {
-  LOG_READ_CALL;
-
-  llvm::SmallVector<int64_t> argTupleIndices;
-  int64_t resultIndex;
-  llvm::SmallVector<int64_t> resultTupleIndices;
-  uint64_t isMustAliasUint;
-
-  if (failed(reader.readSignedVarInts(argTupleIndices)) ||
-      failed(reader.readSignedVarInt(resultIndex)) ||
-      failed(reader.readSignedVarInts(resultTupleIndices)) ||
-      failed(reader.readVarInt(isMustAliasUint))) {
-    return ArgResultAliasAttr();
-  }
-  return ArgResultAliasAttr::get(getContext(), argTupleIndices, resultIndex,
-                                 resultTupleIndices,
-                                 static_cast<bool>(isMustAliasUint));
-}
-
-void StablehloBytecodeInterface::write(ArgResultAliasAttr attr,
-                                       DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(stablehlo_encoding::kArgResultAliasAttr);
-  writer.writeSignedVarInts(attr.getArgTupleIndices());
-  writer.writeSignedVarInt(attr.getResultIndex());
-  writer.writeSignedVarInts(attr.getResultTupleIndices());
-  writer.writeVarInt(attr.getIsMustAlias());
-}
-
-//===----------------------------------------------------------------------===//
 // ChannelHandleAttr
 
 ChannelHandleAttr StablehloBytecodeInterface::readChannelHandleAttr(
@@ -380,9 +345,9 @@ ChannelHandleAttr StablehloBytecodeInterface::readChannelHandleAttr(
   LOG_READ_CALL;
   int64_t handle, type;
   if (failed(reader.readSignedVarInt(handle)) ||
-      failed(reader.readSignedVarInt(type))) {
+      failed(reader.readSignedVarInt(type)))
     return ChannelHandleAttr();
-  }
+
   return ChannelHandleAttr::get(getContext(), handle, type);
 }
 
@@ -451,9 +416,8 @@ StablehloBytecodeInterface::readConvDimensionNumbersAttr(
       failed(reader.readSignedVarInts(kernelSpatialDimensions)) ||
       failed(reader.readSignedVarInt(outputBatchDimension)) ||
       failed(reader.readSignedVarInt(outputFeatureDimension)) ||
-      failed(reader.readSignedVarInts(outputSpatialDimensions))) {
+      failed(reader.readSignedVarInts(outputSpatialDimensions)))
     return ConvDimensionNumbersAttr();
-  }
 
   return ConvDimensionNumbersAttr::get(
       getContext(), inputBatchDimension, inputFeatureDimension,
@@ -488,9 +452,8 @@ DotDimensionNumbersAttr StablehloBytecodeInterface::readDotDimensionNumbersAttr(
   if (failed(reader.readSignedVarInts(lhsBatchingDimensions)) ||
       failed(reader.readSignedVarInts(rhsBatchingDimensions)) ||
       failed(reader.readSignedVarInts(lhsContractingDimensions)) ||
-      failed(reader.readSignedVarInts(rhsContractingDimensions))) {
+      failed(reader.readSignedVarInts(rhsContractingDimensions)))
     return DotDimensionNumbersAttr();
-  }
 
   return DotDimensionNumbersAttr::get(
       getContext(), lhsBatchingDimensions, rhsBatchingDimensions,
@@ -534,9 +497,8 @@ StablehloBytecodeInterface::readGatherDimensionNumbersAttr(
   if (failed(reader.readSignedVarInts(offsetDims)) ||
       failed(reader.readSignedVarInts(collapsedSliceDims)) ||
       failed(reader.readSignedVarInts(startIndexMap)) ||
-      failed(reader.readSignedVarInt(indexVectorDim))) {
+      failed(reader.readSignedVarInt(indexVectorDim)))
     return GatherDimensionNumbersAttr();
-  }
 
   return GatherDimensionNumbersAttr::get(getContext(), offsetDims,
                                          collapsedSliceDims, startIndexMap,
@@ -563,9 +525,9 @@ OutputOperandAliasAttr StablehloBytecodeInterface::readOutputOperandAliasAttr(
 
   if (failed(reader.readSignedVarInts(outputTupleIndices)) ||
       failed(reader.readSignedVarInt(operandIndex)) ||
-      failed(reader.readSignedVarInts(operandTupleIndices))) {
+      failed(reader.readSignedVarInts(operandTupleIndices)))
     return OutputOperandAliasAttr();
-  }
+
   return OutputOperandAliasAttr::get(getContext(), outputTupleIndices,
                                      operandIndex, operandTupleIndices);
 }
@@ -643,9 +605,8 @@ StablehloBytecodeInterface::readScatterDimensionNumbersAttr(
   if (failed(reader.readSignedVarInts(updateWindowDims)) ||
       failed(reader.readSignedVarInts(insertedWindowDims)) ||
       failed(reader.readSignedVarInts(scatterDimsToOperandDims)) ||
-      failed(reader.readSignedVarInt(indexVectorDim))) {
+      failed(reader.readSignedVarInt(indexVectorDim)))
     return ScatterDimensionNumbersAttr();
-  }
 
   return ScatterDimensionNumbersAttr::get(
       getContext(), updateWindowDims, insertedWindowDims,
@@ -685,9 +646,7 @@ TypeExtensionsAttr StablehloBytecodeInterface::readTypeExtensionsAttr(
     DialectBytecodeReader &reader) const {
   LOG_READ_CALL;
   llvm::SmallVector<int64_t> bounds;
-  if (failed(reader.readSignedVarInts(bounds))) {
-    return TypeExtensionsAttr();
-  }
+  if (failed(reader.readSignedVarInts(bounds))) return TypeExtensionsAttr();
   return TypeExtensionsAttr::get(getContext(), bounds);
 }
 
@@ -742,6 +701,35 @@ TokenType StablehloBytecodeInterface::readTokenType(
 void StablehloBytecodeInterface::write(TokenType type,
                                        DialectBytecodeWriter &writer) const {
   writer.writeVarInt(stablehlo_encoding::kTokenType);
+}
+
+std::unique_ptr<DialectVersion> StablehloBytecodeInterface::readVersion(
+    DialectBytecodeReader &reader) const {
+  uint64_t major, minor, patch;
+  if (failed(reader.readVarInt(major)) || failed(reader.readVarInt(minor)) ||
+      failed(reader.readVarInt(patch)))
+    return nullptr;
+
+  auto version = std::make_unique<StablehloDialectVersion>(
+      /*major=*/major, /*minor=*/minor, /*patch=*/patch);
+  if (version && StablehloDialectVersion::getCurrentVersion() < *version) {
+    // Note: dialect bytecode reader does not expose emitWarning.
+    // TODO(jpienaar): Update when it does.
+    mlir::emitWarning(mlir::UnknownLoc::get(getContext()))
+        << "reading newer dialect than supported";
+    return nullptr;
+  }
+
+  return version;
+}
+
+void StablehloBytecodeInterface::writeVersion(
+    DialectBytecodeWriter &writer) const {
+  if (auto version = cast<StablehloDialect>(getDialect())->getVersion()) {
+    writer.writeVarInt(static_cast<uint64_t>(version->getMajor()));
+    writer.writeVarInt(static_cast<uint64_t>(version->getMinor()));
+    writer.writeVarInt(static_cast<uint64_t>(version->getPatch()));
+  }
 }
 
 }  // namespace

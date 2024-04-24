@@ -64,14 +64,14 @@ func.func @while_multi_operands(%arg0: tensor<3xi32>) -> tuple<tensor<i32>, tens
     // CHECK-NEXT: %[[VAL_13:.*]] = mhlo.constant dense<1> : tensor<i32>
     // CHECK: %[[VAL_14:.*]] = mhlo.add %[[VAL_10]], %[[VAL_13]] : tensor<i32>
     // CHECK: %[[VAL_15:.*]] = mhlo.convert %[[VAL_10]] : tensor<i32>
-    // CHECK: %[[VAL_16:.*]] = "mhlo.broadcast_in_dim"(%[[VAL_15]]) {broadcast_dimensions = dense<> : tensor<0xi64>} : (tensor<i32>) -> tensor<3xi32>
+    // CHECK: %[[VAL_16:.*]] = "mhlo.broadcast_in_dim"(%[[VAL_15]]) <{broadcast_dimensions = dense<> : tensor<0xi64>}> : (tensor<i32>) -> tensor<3xi32>
     // CHECK: %[[VAL_17:.*]] = mhlo.add %[[VAL_11]], %[[VAL_16]] : tensor<3xi32>
     // CHECK: scf.yield %[[VAL_14]], %[[VAL_17]] : tensor<i32>, tensor<3xi32>
     %4 = mhlo.constant dense<false> : tensor<i1>
     %5 = mhlo.constant dense<1> : tensor<i32>
     %6 = mhlo.add %arg1, %5 : tensor<i32>
     %7 = mhlo.convert %arg1 : (tensor<i32>) -> tensor<i32>
-    %8 = "mhlo.broadcast_in_dim"(%7) {broadcast_dimensions = dense<> : tensor<0xi64>} : (tensor<i32>) -> tensor<3xi32>
+    %8 = "mhlo.broadcast_in_dim"(%7) <{broadcast_dimensions = dense<> : tensor<0xi64>}> : (tensor<i32>) -> tensor<3xi32>
     %9 = mhlo.add %arg2, %8 : tensor<3xi32>
     "mhlo.return"(%6, %9) : (tensor<i32>, tensor<3xi32>) -> ()
   }) : (tensor<i32>, tensor<3xi32>) -> (tensor<i32>, tensor<3xi32>)
@@ -244,3 +244,44 @@ func.func @case0_nested(%arg0 : tensor<i32>, %arg1 : tensor<4xf32>) -> tensor<4x
   // CHECK: return %[[VAL_2]] : tensor<4xf32>
   func.return %1 : tensor<4xf32>
 }
+
+func.func @while_is_for(%lb: tensor<i32>, %ub: tensor<i32>, %step: tensor<i32>,
+                        %foo: tensor<4xf32>) -> tensor<4xf32> {
+  %0:2 = mhlo.while(%i = %lb, %arg0 = %foo) : tensor<i32>, tensor<4xf32> cond {
+    %1 = mhlo.compare LT, %i, %ub : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    mhlo.return %1 : tensor<i1>
+  } do {
+    %1 = mhlo.add %i, %step : tensor<i32>
+    mhlo.return %1, %arg0 : tensor<i32>, tensor<4xf32>
+  }
+  func.return %0#1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: @while_is_for
+// CHECK-SAME: %[[LB:.*]]: tensor<i32>, %[[UB:.*]]: tensor<i32>, %[[STEP:.*]]: tensor<i32>
+// CHECK-SAME: %[[FOO:.*]]: tensor<4xf32>
+// CHECK-DAG:  %[[LB_EXT:.*]] = tensor.extract %[[LB]]
+// CHECK-DAG:  %[[UB_EXT:.*]] = tensor.extract %[[UB]]
+// CHECK-DAG:  %[[STEP_EXT:.*]] = tensor.extract %[[STEP]]
+// CHECK-NEXT: %[[RET:.*]]:2 = scf.for %[[I:.*]] = %[[LB_EXT]] to %[[UB_EXT]] step %[[STEP_EXT]]
+// CHECK-SAME: iter_args(%[[I2:.*]] = %[[LB]], %[[ARG0:.*]] = %[[FOO]])
+// CHECK-NEXT: %[[TENSOR_I:.*]] = tensor.from_elements %[[I]]
+// CHECK-NEXT: %[[NEXT_I2:.*]] = mhlo.add %[[TENSOR_I]], %[[STEP]]
+// CHECK-NEXT: scf.yield %[[NEXT_I2]], %[[ARG0]]
+// CHECK:      return %[[RET]]#1
+
+func.func @while_is_for_and_unsigned(%lb: tensor<ui32>, %ub: tensor<ui32>,
+                                     %step: tensor<ui32>, %foo: tensor<4xf32>)
+                                     -> tensor<4xf32> {
+  %0:2 = mhlo.while(%i = %lb, %arg0 = %foo) : tensor<ui32>, tensor<4xf32> cond {
+    %1 = mhlo.compare LT, %i, %ub : (tensor<ui32>, tensor<ui32>) -> tensor<i1>
+    mhlo.return %1 : tensor<i1>
+  } do {
+    %1 = mhlo.add %i, %step : tensor<ui32>
+    mhlo.return %1, %arg0 : tensor<ui32>, tensor<4xf32>
+  }
+  func.return %0#1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: @while_is_for_and_unsigned
+// CHECK: scf.while

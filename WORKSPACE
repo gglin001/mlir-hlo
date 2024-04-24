@@ -1,4 +1,4 @@
-# Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2020 The OpenXLA Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Workspace for MLIR HLO."""
+# buildifier: disable=load-on-top
+
+# buildifier: disable=load-on-top
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
@@ -26,9 +29,9 @@ http_archive(
     ],
 )
 
-LLVM_COMMIT = "27aeb58ce4d12e15b966dba86738eb65a96703f7"
+LLVM_COMMIT = "688c10d23630a23e7bb63804de117d1f281c4961"
 
-LLVM_SHA256 = "af7e740dda1cf3fc3232d25afae13156a9812c82eb5f95afc38523cb52b9e605"
+LLVM_SHA256 = "2c81138086af19d2152659528c18240c0b1061766908ca0a61bba268618b6456"
 
 http_archive(
     name = "llvm-raw",
@@ -38,8 +41,6 @@ http_archive(
     urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
 )
 
-load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure", "llvm_disable_optional_support_deps")
+load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 
 llvm_configure(name = "llvm-project")
-
-llvm_disable_optional_support_deps()

@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,6 +29,10 @@ class BufferizeTypeConverter;
 }  // namespace bufferization
 namespace mhlo {
 
+// Rewrite patterns for broadcast to equivalent broadcast_in_dim legalization.
+void populateBroadcastToBroadcastInDimPatterns(MLIRContext *context,
+                                               RewritePatternSet *patterns);
+
 // Collection of rewrite patterns for lowering a general dot product.
 void populateGeneralDotOpLoweringPatterns(RewritePatternSet *patterns,
                                           MLIRContext *ctx);
@@ -41,12 +45,28 @@ void populateComplexLoweringPatterns(MLIRContext *context,
 void populateOptimizeMhloPatterns(MLIRContext *context,
                                   RewritePatternSet *patterns);
 
+// Rewrite patterns for create_token to equivalent after_all legalization.
+void populateCreateTokenToAfterAllPatterns(mlir::MLIRContext *context,
+                                           RewritePatternSet *patterns);
+
+// Rewrite patterns for cross-replica-sum to equivalent all_reduce legalization.
+void populateCrossReplicaSumToAllReducePatterns(mlir::MLIRContext *context,
+                                                RewritePatternSet *patterns);
+
+// Rewrite patterns for dot to equivalent dot_general legalization.
+void populateDotToDotGeneralPatterns(mlir::MLIRContext *context,
+                                     RewritePatternSet *patterns);
+
 // Rewrite patterns for einsum to equivalent dot_general legalization.
 void populateEinsumToDotGeneralPatterns(mlir::MLIRContext *context,
                                         RewritePatternSet *patterns);
 
 // Rewrite patterns for gather to equivalent torch index select legalization.
 void populateGatherToTorchIndexSelectPatterns(mlir::MLIRContext *context,
+                                              RewritePatternSet *patterns);
+
+// Rewrite patterns for torch index select to equivalent gather legalization.
+void populateTorchIndexSelectToGatherPatterns(mlir::MLIRContext *context,
                                               RewritePatternSet *patterns);
 
 void populateMhloToStdPatterns(RewritePatternSet *patterns, MLIRContext *ctx);
@@ -146,37 +166,34 @@ void populateGroupReductionDimensionsPatterns(MLIRContext *context,
                                               RewritePatternSet *patterns,
                                               bool preferColumnsReductions);
 
-/// Populate rank specialization clustering and lowering patterns.
-void populateRankSpecializationClusterPatterns(MLIRContext *context,
-                                               RewritePatternSet *patterns);
-void populateRankSpecializationToSCFPatterns(MLIRContext *context,
-                                             RewritePatternSet *patterns,
-                                             int64_t maxTargetRank);
-
 /// Populate sparse tensor specific rewriting patterns.
 void populateSparseRewritingPatterns(RewritePatternSet *patterns,
                                      MLIRContext *ctx);
 
 /// Populates sparse ops in CHLO to linalg rewriting patterns.
-void populateLegalizeSparseChloToLinalgPatterns(MLIRContext *context,
-                                                TypeConverter &typeConverter,
-                                                RewritePatternSet *patterns);
+void populateLegalizeSparseCHLOPatterns(MLIRContext *context,
+                                        TypeConverter &typeConverter,
+                                        RewritePatternSet *patterns);
+
+/// Populate sparse ops to mhlo.CustomCall patterns.
+void populateLegalizeSparseOpsToCustomCallPatterns(MLIRContext *context,
+                                                   TypeConverter &typeConverter,
+                                                   RewritePatternSet *patterns);
 
 }  // namespace mhlo
 
 namespace chlo {
 
-// Populates a collection of conversion patterns for legalizing broadcasting
-// client-HLO to their non-broadcasting counterparts.
-void populateChloBroadcastingPatterns(MLIRContext *context,
-                                      RewritePatternSet *patterns);
+// Populates direct translations between CHLO and MHLO ops for higher level
+// MHLO ops like TopK and Erf.
+void populateChloToHighLevelMhloOpPatterns(MLIRContext *context,
+                                           RewritePatternSet *patterns);
 
-// Populates a collection of conversion patterns for legalizing client-HLO to
-// HLO by decomposing client-operations to corresponding sequences of more
-// primitive operations. This does not include the
-// PopulateChloBroadcastingPatterns above.
-void populateDecomposeChloPatterns(MLIRContext *context,
-                                   RewritePatternSet *patterns);
+// Populates direct translations between CHLO->MHLO high level ops
+// and CHLO->StableHLO->MHLO patterns.
+void populateChloToHloPatterns(MLIRContext *context,
+                               TypeConverter *typeConverter,
+                               RewritePatternSet *patterns);
 
 }  // namespace chlo
 

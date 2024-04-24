@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,19 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_HLO_TRANSFORMS_GPU_PASSES
-#define TENSORFLOW_COMPILER_MLIR_HLO_TRANSFORMS_GPU_PASSES
+#ifndef MLIR_HLO_TRANSFORMS_GPU_PASSES
+#define MLIR_HLO_TRANSFORMS_GPU_PASSES
 
 include "mlir/Pass/PassBase.td"
-
-def GpuFusionRewritePass : Pass<"gpu-fusion-rewrite", "ModuleOp"> {
-  let summary = "Pass to rewrite lmhlo.fusion ops to gpu.launch_func.";
-  let constructor = "createGpuFusionRewritePass()";
-}
 
 def GpuKernelToNVVMPass : Pass<"gpu-kernel-to-nvvm", "gpu::GPUModuleOp"> {
   let summary = "Pass to transform a gpu module to nvvm.";
   let dependentDialects = ["LLVM::LLVMDialect", "NVVM::NVVMDialect"];
+  let options = [
+      Option<"useBarePtrCallConv", "use-bare-ptr-call-conv", "bool",
+             /*default=*/"false", "Use bare pointer memref to llvm lowering">,
+  ];
   let constructor = "createGpuKernelToNvvmPass()";
 }
 
@@ -35,4 +34,4 @@ def GpuKernelToROCDLPass : Pass<"gpu-kernel-to-rocdl", "gpu::GPUModuleOp"> {
   let constructor = "createGpuKernelToRocdlPass()";
 }
 
-#endif // TENSORFLOW_COMPILER_MLIR_HLO_TRANSFORMS_GPU_PASSES
+#endif // MLIR_HLO_TRANSFORMS_GPU_PASSES

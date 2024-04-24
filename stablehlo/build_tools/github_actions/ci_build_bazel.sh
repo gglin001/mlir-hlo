@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -o errexit
+set -o nounset
+set -o pipefail
+
 if [[ $# -ne 0 ]] ; then
   echo "Usage: $0"
   exit 1
 fi
 
-# Build StableHLO
-echo "=== Building StableHLO ==="
-bazel build //:all
+# Build and Test StableHLO
+bazel build --lockfile_mode=error //...
+bazel test //...

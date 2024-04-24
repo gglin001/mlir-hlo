@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -141,7 +141,13 @@ class ExpandHloTuplesPass
       return;
     }
 
-    expandTupledTensorInReturnOp(entryFunction);
+    // Recursively expand tuples until all of them are gone.
+    while (
+        llvm::any_of(llvm::concat<const Type>(entryFunction.getArgumentTypes(),
+                                              entryFunction.getResultTypes()),
+                     [](Type type) { return type.isa<TupleType>(); })) {
+      expandTupledTensorInReturnOp(entryFunction);
+    }
   }
 };
 

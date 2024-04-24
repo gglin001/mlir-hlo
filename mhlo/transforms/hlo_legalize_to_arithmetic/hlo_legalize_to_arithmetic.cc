@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ limitations under the License.
 // This file implements logic for lowering HLO dialect to LHLO dialect.
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "mhlo/IR/hlo_ops.h"
@@ -132,7 +133,7 @@ struct ScalarHloToArithmeticPattern : public OpConversionPattern<OpTy> {
 
     auto loc = op.getLoc();
 
-    Optional<ShapedType> resultTy;
+    std::optional<ShapedType> resultTy;
     resultTy = this->typeConverter->convertType(op->getResultTypes().front())
                    .template dyn_cast<ShapedType>();
 
@@ -206,6 +207,7 @@ void populateScalarHloToArithmeticConversionPatterns(
       ScalarHloToArithmeticPattern<mhlo::CopyOp>,
       ScalarHloToArithmeticPattern<mhlo::CosineOp>,
       ScalarHloToArithmeticPattern<mhlo::DivOp>,
+      ScalarHloToArithmeticPattern<mhlo::ErfOp>,
       ScalarHloToArithmeticPattern<mhlo::ExpOp>,
       ScalarHloToArithmeticPattern<mhlo::Expm1Op>,
       ScalarHloToArithmeticPattern<mhlo::FloorOp>,

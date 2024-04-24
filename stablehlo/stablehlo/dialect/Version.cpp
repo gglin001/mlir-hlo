@@ -1,5 +1,5 @@
 /* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
-   Copyright 2022 The StableHLO Authors.
+   Copyright 2023 The StableHLO Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,10 @@ limitations under the License.
 
 #include "stablehlo/dialect/Version.h"
 
+#include <cstdint>
+
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/Diagnostics.h"
 
@@ -28,48 +31,48 @@ namespace {
 static int64_t parseNumber(llvm::StringRef numRef) {
   int64_t num;
   if (numRef.getAsInteger(/*radix=*/10, num)) {
-    llvm_unreachable("failed to parse version number");
+    llvm::report_fatal_error("failed to parse version number");
   }
   return num;
 }
 
-/// Validate version argument is `#.#.#` (ex: 0.3.0, 1.2.3, 0.123.0)
+/// Validate version argument is `#.#.#` (ex: 0.9.0, 0.99.0, 1.2.3)
 /// Returns the vector of 3 matches (major, minor, patch) if successful,
 /// else returns failure.
 static FailureOr<std::array<int64_t, 3>> extractVersionNumbers(
     llvm::StringRef versionRef) {
   llvm::Regex versionRegex("^([0-9]+)\\.([0-9]+)\\.([0-9]+)$");
   llvm::SmallVector<llvm::StringRef> matches;
-  if (!versionRegex.match(versionRef, &matches)) {
-    return failure();
-  }
+  if (!versionRegex.match(versionRef, &matches)) return failure();
   return std::array<int64_t, 3>{parseNumber(matches[1]),
                                 parseNumber(matches[2]),
                                 parseNumber(matches[3])};
 }
 
-template <typename OutputT>
-OutputT& dump(OutputT& out, const Version& version) {
-  return out << version.getMajor() << '.' << version.getMinor() << '.'
-             << version.getPatch();
-}
 }  // namespace
 
 FailureOr<Version> Version::fromString(llvm::StringRef versionRef) {
   auto failOrVersionArray = extractVersionNumbers(versionRef);
-  if (failed(failOrVersionArray)) {
-    return failure();
-  }
-
+  if (failed(failOrVersionArray)) return failure();
   auto versionArr = *failOrVersionArray;
   return Version(versionArr[0], versionArr[1], versionArr[2]);
 }
 
-mlir::Diagnostic& operator<<(mlir::Diagnostic& diag, const Version& version) {
-  return dump<mlir::Diagnostic>(diag, version);
+FailureOr<int64_t> Version::getBytecodeVersion() const {
+  if (*this < Version(0, 9, 0)) return failure();
+  if (*this < Version(0, 10, 0)) return 0;
+  if (*this < Version(0, 12, 0)) return 1;
+  if (*this < Version(0, 14, 0)) return 3;
+  if (*this < Version(0, 15, 0)) return 4;  // (revised from 5 to 4 in #1827)
+  if (*this <= getCurrentVersion()) return 6;
+  return failure();
 }
-llvm::raw_ostream& operator<<(llvm::raw_ostream& diag, const Version& version) {
-  return dump<llvm::raw_ostream>(diag, version);
+
+mlir::Diagnostic& operator<<(mlir::Diagnostic& diag, const Version& version) {
+  return diag << version.toString();
+}
+llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const Version& version) {
+  return os << version.toString();
 }
 
 }  // namespace vhlo

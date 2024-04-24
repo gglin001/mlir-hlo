@@ -1,5 +1,5 @@
 # Copyright 2020 The TensorFlow Authors. All Rights Reserved.
-# Copyright 2022 The StableHLO Authors.
+# Copyright 2023 The StableHLO Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -65,6 +65,7 @@ add_mlir_dialect_library(ChloOps
   LINK_LIBS PUBLIC
   StablehloBase
   StablehloBroadcastUtils
+  StablehloTypeInference
   MLIRArithDialect
   MLIRControlFlowInterfaces
   MLIRInferTypeOpInterface
@@ -91,6 +92,7 @@ add_mlir_dialect_library(StablehloRegister
   ChloOps
   StablehloOps
   VhloOps
+  MLIRFuncDialect
 )
 
 add_mlir_dialect_library(StablehloAssemblyFormat
@@ -100,6 +102,20 @@ add_mlir_dialect_library(StablehloAssemblyFormat
   LINK_LIBS PUBLIC
   StablehloBase
   MLIRIR
+)
+
+add_mlir_dialect_library(StablehloSerialization
+  PARTIAL_SOURCES_INTENDED
+  Serialization.cpp
+
+  LINK_LIBS PUBLIC
+  StablehloOps
+  StablehloPasses
+  Version
+  VhloOps
+  MLIRBytecodeWriter
+  MLIRIR
+  MLIRParser
 )
 
 add_mlir_dialect_library(StablehloTypeInference
@@ -120,6 +136,8 @@ mlir_tablegen(StablehloEnums.h.inc -gen-enum-decls)
 mlir_tablegen(StablehloEnums.cpp.inc -gen-enum-defs)
 mlir_tablegen(StablehloAttrs.h.inc -gen-attrdef-decls)
 mlir_tablegen(StablehloAttrs.cpp.inc -gen-attrdef-defs)
+mlir_tablegen(StablehloTypeDefs.h.inc -gen-typedef-decls --typedefs-dialect=stablehlo)
+mlir_tablegen(StablehloTypeDefs.cpp.inc -gen-typedef-defs --typedefs-dialect=stablehlo)
 add_public_tablegen_target(StablehloOpsIncGen)
 add_dependencies(mlir-headers StablehloOpsIncGen)
 
@@ -135,6 +153,7 @@ add_mlir_dialect_library(StablehloOps
   StablehloAssemblyFormat
   StablehloBase
   StablehloTypeInference
+  Version
   MLIRArithDialect
   MLIRDataLayoutInterfaces
   MLIRInferTypeOpInterface
@@ -149,6 +168,15 @@ add_mlir_dialect_library(StablehloOps
 target_include_directories(StablehloOps INTERFACE
   $<BUILD_INTERFACE:${STABLEHLO_SOURCE_DIR}>
   $<BUILD_INTERFACE:${STABLEHLO_BINARY_DIR}>
+)
+
+add_mlir_dialect_library(Version
+  PARTIAL_SOURCES_INTENDED
+  Version.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+  MLIRSupport
 )
 
 set(LLVM_TARGET_DEFINITIONS VhloOps.td)
@@ -184,6 +212,8 @@ add_mlir_dialect_library(VhloOps
 
   LINK_LIBS PUBLIC
   StablehloAssemblyFormat
+  VhloTypes
+  Version
   MLIRIR
   MLIRQuantDialect
   MLIRShapeDialect
@@ -199,19 +229,10 @@ add_mlir_dialect_library(VhloTypes
 
   LINK_LIBS PUBLIC
   StablehloAssemblyFormat
-  VhloVersion
+  Version
   MLIRIR
   MLIRQuantDialect
   MLIRShapeDialect
   MLIRSupport
   MLIRTransformUtils
-)
-
-add_mlir_dialect_library(VhloVersion
-  PARTIAL_SOURCES_INTENDED
-  Version.cpp
-
-  LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRSupport
 )

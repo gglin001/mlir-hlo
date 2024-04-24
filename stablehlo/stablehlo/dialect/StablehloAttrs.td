@@ -25,8 +25,25 @@ def StableHLO_Dims : ArrayRefParameter<"int64_t", "Dimension"> {
   let printer = "printDimSizes($_printer, $_self)";
 }
 
+def GenericDenseI64ArrayAttr : Attr<DenseI64ArrayAttr.predicate, "DenseI64ArrayAttr with generic Attribute storage"> {
+  let storageType = "Attribute";
+  let valueType = DenseI64ArrayAttr.valueType;
+  let returnType = "::llvm::ArrayRef<int64_t>";
+  let baseAttr = DenseI64ArrayAttr;
+  let convertFromStorage = "$_self.cast<DenseI64ArrayAttr>().asArrayRef()";
+  let constBuilderCall = "$_builder.getDenseI64ArrayAttr($0)";
+}
+
+def GenericDenseBoolArrayAttr : Attr<DenseBoolArrayAttr.predicate, "DenseBoolArrayAttr with generic Attribute storage"> {
+  let storageType = "Attribute";
+  let valueType = DenseBoolArrayAttr.valueType;
+  let returnType = "::llvm::ArrayRef<bool>";
+  let convertFromStorage = "$_self.cast<DenseBoolArrayAttr>().asArrayRef()";
+  let constBuilderCall = "$_builder.getDenseBoolArrayAttr($0)";
+}
+
+
 def StableHLO_ScatterDimensionNumbers : AttrDef<StableHLO_Dialect, "ScatterDimensionNumbers"> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "scatter";
   let summary = "Attribute that models the dimension information for scatter";
   let parameters = (ins
@@ -39,7 +56,6 @@ def StableHLO_ScatterDimensionNumbers : AttrDef<StableHLO_Dialect, "ScatterDimen
 }
 
 def StableHLO_GatherDimensionNumbers : AttrDef<StableHLO_Dialect, "GatherDimensionNumbers"> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "gather";
   let summary = "Attribute that models the dimension information for gather";
   let parameters = (ins
@@ -52,7 +68,6 @@ def StableHLO_GatherDimensionNumbers : AttrDef<StableHLO_Dialect, "GatherDimensi
 }
 
 def StableHLO_DotDimensionNumbers : AttrDef<StableHLO_Dialect, "DotDimensionNumbers"> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "dot";
   let summary = "Attribute that models the dimension information for dot.";
   let parameters = (ins
@@ -65,7 +80,6 @@ def StableHLO_DotDimensionNumbers : AttrDef<StableHLO_Dialect, "DotDimensionNumb
 }
 
 def StableHLO_OutputOperandAlias : AttrDef<StableHLO_Dialect, "OutputOperandAlias"> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "output_operand_alias";
   let summary =
     "Attribute that models the alias relationship of output and operand of a CustomCall op";
@@ -108,44 +122,11 @@ def StableHLO_OutputOperandAlias : AttrDef<StableHLO_Dialect, "OutputOperandAlia
   }];
 }
 
-def StableHLO_ArgResultAlias : AttrDef<StableHLO_Dialect, "ArgResultAlias"> {
-  let cppNamespace = "::mlir::stablehlo";
-  let mnemonic = "result_alias";
-  let summary =
-    "Attribute that models the alias relationship of entry function argument";
-  let description = [{
-    This attribute captures the alias relationship of a main function
-    argument to one of the results, denoted by `resultIndex`. The
-    `argTupleIndices` and `resultTupleIndices` are used to index into nested
-    tuples in operand and result respectively. If `isMustAlias` is true then the
-    operand-result pair must alias.
-
-    This is meant to be used as an attribute on a function argument.
-    For example, in the following code it expresses that `%arg1` may alias 0-th
-    result.
-
-    ```mlir
-    func @main(%arg0: tensor<2xf32>, %arg1: tensor<3xf32>
-      {stablehlo.result_alias = stablehlo.result_alias<result_index = [2], ...>}
-      ) -> tensor<2xf32>, tensor<3xf32> {
-      // function body ...
-    }
-    ```
-  }];
-  let parameters = (ins
-    StableHLO_Dims:$argTupleIndices,
-    "int64_t":$resultIndex,
-    StableHLO_Dims:$resultTupleIndices,
-    "bool":$isMustAlias
-  );
-  let hasCustomAssemblyFormat = 1;
-}
-
 // Represents a unique identifier for each Send/Recv instruction pair or
-// optionally for collective instructions (AllReduce, CollectivePermute,
-// AllToAll). Non-positive channel_id handle is equivalent to no channel id.
+// optionally for collective instructions (AllToAll, AllReduce,
+// CollectiveBroadcast, and CollectivePermute). Non-positive channel_id
+// handle is equivalent to no channel id.
 def StableHLO_ChannelHandle : AttrDef<StableHLO_Dialect, "ChannelHandle"> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "channel_handle";
   let parameters = (ins "int64_t":$handle, "int64_t":$type);
   let summary = "two 64-bit integers 'handle' and 'type'";
@@ -155,7 +136,6 @@ def StableHLO_ChannelHandle : AttrDef<StableHLO_Dialect, "ChannelHandle"> {
 def StableHLO_TypeExtensions : AttrDef<StableHLO_Dialect, "TypeExtensions", [
     DeclareAttrInterfaceMethods<VerifiableTensorEncoding>,
     DeclareAttrInterfaceMethods<HLO_BoundedAttrInterface>]> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "type_extensions";
 
   // TODO(b/238903065): Move sparsity related info here from the standalone
@@ -179,7 +159,7 @@ def StableHLO_TypeExtensions : AttrDef<StableHLO_Dialect, "TypeExtensions", [
 // A layout attribute (1D tensor of index type)
 def StableHLO_LayoutAttr : Attr<
   And<[IndexElementsAttr.predicate,
-       CPred<[{$_self.cast<::mlir::DenseIntElementsAttr>().getType().getRank()
+       CPred<[{cast<::mlir::DenseIntElementsAttr>($_self).getType().getRank()
                == 1}]>]>,
   "A 1D tensor of index type (layout)"> {
   let storageType = IndexElementsAttr.storageType;
@@ -198,19 +178,7 @@ def StableHLO_FlatSymbolRefArrayAttr :
   let constBuilderCall = "::mlir::ArrayAttr::get($_builder.getContext(), $0)";
 }
 
-def StableHLO_BoolElementsAttr :
-    ElementsAttrBase<
-      And<[CPred<"$_self.isa<::mlir::DenseIntOrFPElementsAttr>()">,
-           CPred<"$_self.cast<::mlir::DenseIntOrFPElementsAttr>().getType().getElementType().isInteger(1)">]>,
-      "constant boolean vector/tensor attribute"> {
-  let storageType = [{ ::mlir::DenseElementsAttr }];
-  let returnType = [{ ::mlir::DenseElementsAttr }];
-
-  let convertFromStorage = "$_self";
-}
-
 def StableHLO_ConvDimensionNumbers : AttrDef<StableHLO_Dialect, "ConvDimensionNumbers"> {
-  let cppNamespace = "::mlir::stablehlo";
   let mnemonic = "conv";
   let summary = "Structure of dimension information for conv op";
   let parameters = (ins
@@ -232,15 +200,15 @@ def StableHLO_ConvDimensionNumbers : AttrDef<StableHLO_Dialect, "ConvDimensionNu
 def StableHLO_ConvolutionAttributes {
   dag attributes = (ins
     // Default value: one for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$window_strides,
+    OptionalAttr<GenericDenseI64ArrayAttr>:$window_strides,
     // Default value: two zeros for each of the spatial dimension.
     OptionalAttr<I64ElementsAttr>:$padding,
     // Default value: one for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$lhs_dilation,
+    OptionalAttr<GenericDenseI64ArrayAttr>:$lhs_dilation,
     // Default value: one for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$rhs_dilation,
+    OptionalAttr<GenericDenseI64ArrayAttr>:$rhs_dilation,
     // Default value: false for each of the spatial dimension.
-    OptionalAttr<StableHLO_BoolElementsAttr>:$window_reversal,
+    OptionalAttr<GenericDenseBoolArrayAttr>:$window_reversal,
     StableHLO_ConvDimensionNumbers:$dimension_numbers,
     I64Attr:$feature_group_count,
     I64Attr:$batch_group_count,

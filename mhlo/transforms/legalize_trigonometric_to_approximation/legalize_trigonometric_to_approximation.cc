@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2020 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@ limitations under the License.
 // This file implements the lowering for trigonometric standard ops to
 // approximations.
 
+#include <array>
+#include <memory>
 #include <utility>
 
 #include "mhlo/transforms/passes.h"

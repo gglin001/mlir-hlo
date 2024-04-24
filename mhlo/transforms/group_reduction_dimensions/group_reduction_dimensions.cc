@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 
 #include <algorithm>
+#include <memory>
+#include <optional>
 #include <utility>
 
 #include "llvm/ADT/STLExtras.h"
@@ -27,6 +29,7 @@ limitations under the License.
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -156,7 +159,7 @@ LogicalResult tryLowerTo1DOr2DReduction(
 
   // Reify the result shape early so that the pattern can fail without altering
   // the IR.
-  Optional<Value> resultShape;
+  std::optional<Value> resultShape;
   if (requiresDynamicReshape) {
     llvm::SmallVector<Value, 1> reifiedShapes;
     if (failed(llvm::cast<InferShapedTypeOpInterface>(op.getOperation())
@@ -222,8 +225,11 @@ LogicalResult tryLowerTo1DOr2DReduction(
   int64_t reductionDim = leadingReduction ? 0 : 1;
   auto reductionDimAttr = rewriter.getI64VectorAttr({reductionDim});
   Value initVal = op.getInitValues().front();
-  auto reductionOp =
-      rewriter.create<ReduceOp>(loc, intermResult, initVal, reductionDimAttr);
+  SmallVector<Type> elementTypes{llvm::map_range(
+      op.getBody().front().getTerminator()->getOperands(),
+      [](Value v) { return v.getType().cast<ShapedType>().getElementType(); })};
+  auto reductionOp = rewriter.create<ReduceOp>(loc, intermResult, initVal,
+                                               reductionDimAttr, elementTypes);
   rewriter.inlineRegionBefore(op.getBody(), reductionOp.getBody(),
                               reductionOp.getBody().begin());
   intermResult = reductionOp->getResults().front();
@@ -269,6 +275,11 @@ struct GroupReductionDimensionsPattern : public OpRewritePattern<ReduceOp> {
     if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
       return failure();
     Value arg = op.getInputs().front();
+    // Only apply to non-sparse tensors.
+    if (auto rtp = arg.getType().cast<RankedTensorType>();
+        rtp.getEncoding() != nullptr)
+      return failure();
+
     auto argTy = arg.getType().cast<RankedTensorType>();
 
     // Sort reduction dimensions, which is not an invariant of the op.

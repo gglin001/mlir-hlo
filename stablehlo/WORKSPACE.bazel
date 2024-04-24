@@ -13,22 +13,13 @@
 # limitations under the License.
 """Workspace for StableHLO."""
 
+workspace(name = "stablehlo")
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-SKYLIB_VERSION = "1.3.0"
+LLVM_COMMIT = "676d3bafc09d0c331a04b813804407334de12917"
 
-http_archive(
-    name = "bazel_skylib",
-    sha256 = "74d544d96f4a5bb630d465ca8bbcfe231e3594e5aae57e1edbf17a6eb3ca2506",
-    urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version = SKYLIB_VERSION),
-        "https://github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version = SKYLIB_VERSION),
-    ],
-)
-
-LLVM_COMMIT = "f58de2125caf75ec0d40bc3e094a93c0b314a66a"
-
-LLVM_SHA256 = "a96047c57addc2a349defab0c7fb84979aeac039ed9ada2901cd2e0ca88fffb6"
+LLVM_SHA256 = "cb6f82a8413bd518499c3081a5c396f8a140a7c650201c201892cb6ce4f4f397"
 
 http_archive(
     name = "llvm-raw",
@@ -38,8 +29,32 @@ http_archive(
     urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
 )
 
-load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure", "llvm_disable_optional_support_deps")
+# This is needed since https://reviews.llvm.org/D143344.
+# Not sure if it's a bug or a feature, but it doesn't hurt to keep an additional
+# dependency here.
+http_archive(
+    name = "llvm_zstd",
+    build_file = "@llvm-raw//utils/bazel/third_party_build:zstd.BUILD",
+    sha256 = "7c42d56fac126929a6a85dbc73ff1db2411d04f104fae9bdea51305663a83fd0",
+    strip_prefix = "zstd-1.5.2",
+    urls = [
+        "https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz",
+    ],
+)
+
+# This is needed since https://reviews.llvm.org/D143320
+# Not sure if it's a bug or a feature, but it doesn't hurt to keep an additional
+# dependency here.
+http_archive(
+    name = "llvm_zlib",
+    build_file = "@llvm-raw//utils/bazel/third_party_build:zlib-ng.BUILD",
+    sha256 = "e36bb346c00472a1f9ff2a0a4643e590a254be6379da7cddd9daeb9a7f296731",
+    strip_prefix = "zlib-ng-2.0.7",
+    urls = [
+        "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.0.7.zip",
+    ],
+)
+
+load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 
 llvm_configure(name = "llvm-project")
-
-llvm_disable_optional_support_deps()

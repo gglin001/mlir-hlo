@@ -1,5 +1,5 @@
 # Copyright 2020 The TensorFlow Authors. All Rights Reserved.
-# Copyright 2022 The StableHLO Authors.
+# Copyright 2023 The StableHLO Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,20 +14,28 @@
 # limitations under the License.
 
 set(LLVM_OPTIONAL_SOURCES
+  StablehloLspServerMain.cpp
   StablehloOptMain.cpp
-  StablehloInterpreterMain.cpp
+  StablehloTranslateMain.cpp
+  Interpreter.cpp
 )
 
 # stablehlo-opt
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 set(LIBS
         ${dialect_libs}
         ${conversion_libs}
+        ${extension_libs}
         MLIROptLib
         StablehloRegister
         StablehloTestUtils
         StablehloPasses
+        CheckOps
+        InterpreterOps
+        StablehloLinalgTransforms
+        StablehloTOSATransforms
         )
 add_llvm_executable(stablehlo-opt StablehloOptMain.cpp)
 llvm_update_compile_flags(stablehlo-opt)
@@ -35,17 +43,47 @@ target_link_libraries(stablehlo-opt PRIVATE ${LIBS})
 
 mlir_check_all_link_libraries(stablehlo-opt)
 
-# stablehlo-interpreter
-add_llvm_executable(stablehlo-interpreter StablehloInterpreterMain.cpp)
-llvm_update_compile_flags(stablehlo-interpreter)
-target_link_libraries(stablehlo-interpreter PRIVATE
+# stablehlo-translate
+add_llvm_executable(stablehlo-translate StablehloTranslateMain.cpp)
+llvm_update_compile_flags(stablehlo-translate)
+target_link_libraries(stablehlo-translate PRIVATE
+  ${dialect_libs}
   MLIRFuncDialect
   MLIRIR
+  MLIRPass
   MLIRSupport
+  MLIRTransforms
   MLIRTranslateLib
+  CheckOps
+  InterpreterOps
   StablehloOps
-  StablehloReferenceInterpreter
+  StablehloReferenceApi
+  StablehloReferenceErrors
+  StablehloReferenceOps
+  StablehloReferenceProcessGrid
+  StablehloReferenceScope
   StablehloReferenceTensor
+  StablehloReferenceValue
+  StablehloRegister
+  StablehloSerialization
+  VhloOps
 )
 
-mlir_check_all_link_libraries(stablehlo-interpreter)
+mlir_check_all_link_libraries(stablehlo-translate)
+
+# stablehlo-lsp-server
+set(LIBS
+        ${dialect_libs}
+        ${conversion_libs}
+        ${extension_libs}
+        MLIRLspServerLib
+        StablehloRegister
+        )
+add_llvm_executable(stablehlo-lsp-server StablehloLspServerMain.cpp)
+llvm_update_compile_flags(stablehlo-lsp-server)
+target_link_libraries(stablehlo-lsp-server PRIVATE ${LIBS})
+
+# We don't have tests for stablehlo-lsp-server, so we at least attach it to
+# one of our test suites.
+mlir_check_all_link_libraries(stablehlo-lsp-server)
+add_dependencies(check-stablehlo-quick stablehlo-lsp-server)

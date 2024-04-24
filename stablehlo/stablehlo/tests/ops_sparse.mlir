@@ -6,15 +6,15 @@
 // output types), dense or sparse ops are semantically equivalent.
 
 #SV = #sparse_tensor.encoding<{
-  dimLevelType = ["compressed"]
+  map = (d0) -> (d0 : compressed)
 }>
 
 #CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
+  map = (d0, d1) -> (d0 : dense, d1 : compressed)
 }>
 
 #DCSR = #sparse_tensor.encoding<{
-  dimLevelType = ["compressed", "compressed"]
+  map = (d0, d1) -> (d0 : compressed, d1 : compressed)
 }>
 
 //
@@ -207,7 +207,7 @@ func.func @sparse_mul_eltwise2(%arg0: tensor<10x20xf32>,
 // CHECK-LABEL: func @dot1(
 //  CHECK-SAME: %[[A:.*]]: tensor<4xf64, #{{.*}}>,
 //  CHECK-SAME: %[[B:.*]]: tensor<4xf64>) -> tensor<f64> {
-//       CHECK: %[[T:.*]] = "stablehlo.dot_general"(%[[A]], %[[B]]) {{{.*}}} : (tensor<4xf64, #{{.*}}>, tensor<4xf64>) -> tensor<f64>
+//       CHECK: %[[T:.*]] = stablehlo.dot_general %[[A]], %[[B]]{{.*}} : (tensor<4xf64, #{{.*}}>, tensor<4xf64>) -> tensor<f64>
 //       CHECK: return %[[T]] : tensor<f64>
 func.func @dot1(%arg0: tensor<4xf64, #SV>,
                 %arg1: tensor<4xf64>) -> tensor<f64> {
@@ -223,7 +223,7 @@ func.func @dot1(%arg0: tensor<4xf64, #SV>,
 // CHECK-LABEL: func @dot2(
 //  CHECK-SAME: %[[A:.*]]: tensor<4xf64>,
 //  CHECK-SAME: %[[B:.*]]: tensor<4xf64, #{{.*}}>) -> tensor<f64> {
-//       CHECK: %[[T:.*]] = "stablehlo.dot_general"(%[[A]], %[[B]]) {{{.*}}} : (tensor<4xf64>, tensor<4xf64, #{{.*}}>) -> tensor<f64>
+//       CHECK: %[[T:.*]] = stablehlo.dot_general %[[A]], %[[B]]{{.*}} : (tensor<4xf64>, tensor<4xf64, #{{.*}}>) -> tensor<f64>
 //       CHECK: return %[[T]] : tensor<f64>
 func.func @dot2(%arg0: tensor<4xf64>,
                 %arg1: tensor<4xf64, #SV>) -> tensor<f64> {
@@ -239,7 +239,7 @@ func.func @dot2(%arg0: tensor<4xf64>,
 // CHECK-LABEL: func @dot3(
 //  CHECK-SAME: %[[A:.*]]: tensor<4xf64, #{{.*}}>,
 //  CHECK-SAME: %[[B:.*]]: tensor<4xf64, #{{.*}}>) -> tensor<f64> {
-//       CHECK: %[[T:.*]] = "stablehlo.dot_general"(%[[A]], %[[B]]) {{{.*}}} : (tensor<4xf64, #{{.*}}>, tensor<4xf64, #{{.*}}>) -> tensor<f64>
+//       CHECK: %[[T:.*]] = stablehlo.dot_general %[[A]], %[[B]]{{.*}} : (tensor<4xf64, #{{.*}}>, tensor<4xf64, #{{.*}}>) -> tensor<f64>
 //       CHECK: return %[[T]] : tensor<f64>
 func.func @dot3(%arg0: tensor<4xf64, #SV>,
                 %arg1: tensor<4xf64, #SV>) -> tensor<f64> {
@@ -259,7 +259,7 @@ func.func @dot3(%arg0: tensor<4xf64, #SV>,
 // CHECK-LABEL: func @sparse_reduce(
 //  CHECK-SAME: %[[A:.*]]: tensor<10xi64, #{{.*}}>) -> tensor<i64> {
 //       CHECK: %[[C:.*]] = stablehlo.constant dense<0> : tensor<i64>
-//       CHECK: %[[T:.*]] = stablehlo.reduce(%[[A]] init: %[[C]])  across dimensions = [0] : (tensor<10xi64, #{{.*}}>) -> tensor<i64>
+//       CHECK: %[[T:.*]] = stablehlo.reduce(%[[A]] init: %[[C]]) applies stablehlo.add across dimensions = [0] : (tensor<10xi64, #{{.*}}>) -> tensor<i64>
 //       CHECK: return %[[T]] : tensor<i64>
 func.func @sparse_reduce(%arg0: tensor<10xi64, #SV>) -> tensor<i64> {
   %0 = stablehlo.constant dense<0> : tensor<i64>

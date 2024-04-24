@@ -1,6 +1,35 @@
 // RUN: stablehlo-opt %s | FileCheck %s
 // RUN: stablehlo-opt %s | stablehlo-opt | FileCheck %s
 
+// Test encodings first since aliases are printed at top of file.
+#CSR = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (d0 : dense, d1 : compressed)
+}>
+
+#DCSR = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (d0 : compressed, d1 : compressed)
+}>
+
+// CHECK: #[[$CSR:.*]] = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : dense, d1 : compressed) }>
+// CHECK: #[[$DCSR:.*]] = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : compressed, d1 : compressed) }>
+// CHECK-LABEL: func @encodings
+func.func @encodings(%arg0: tensor<10x20xf32, #CSR>,
+                     %arg1: tensor<10x20xf32, #DCSR>) -> tensor<10x20xf32> {
+  // CHECK:      %0 = stablehlo.add %arg0, %arg1 : (tensor<10x20xf32, #[[$CSR]]>, tensor<10x20xf32, #[[$DCSR]]>) -> tensor<10x20xf32>
+  // CHECK-NEXT: %1 = stablehlo.add %arg1, %arg1 : tensor<10x20xf32, #[[$DCSR]]>
+  // CHECK-NEXT: %2 = stablehlo.abs %arg0 : (tensor<10x20xf32, #[[$CSR]]>) -> tensor<10x20xf32>
+  // CHECK-NEXT: %3 = stablehlo.abs %arg0 : tensor<10x20xf32, #[[$CSR]]>
+  // CHECK-NEXT: %4 = stablehlo.complex %arg0, %arg0 : (tensor<10x20xf32, #[[$CSR]]>, tensor<10x20xf32, #[[$CSR]]>) -> tensor<10x20xcomplex<f32>>
+  %0 = "stablehlo.add"(%arg0, %arg1) : (tensor<10x20xf32, #CSR>,
+                                   tensor<10x20xf32, #DCSR>) -> tensor<10x20xf32>
+  %1 = "stablehlo.add"(%arg1, %arg1) : (tensor<10x20xf32, #DCSR>,
+                                   tensor<10x20xf32, #DCSR>) -> tensor<10x20xf32, #DCSR>
+  %2 = "stablehlo.abs"(%arg0) : (tensor<10x20xf32, #CSR>) -> tensor<10x20xf32>
+  %3 = "stablehlo.abs"(%arg0) : (tensor<10x20xf32, #CSR>) -> tensor<10x20xf32, #CSR>
+  %4 = "stablehlo.complex"(%arg0, %arg0) : (tensor<10x20xf32, #CSR>, tensor<10x20xf32, #CSR>) -> tensor<10x20xcomplex<f32>>
+  func.return %0 : tensor<10x20xf32>
+}
+
 // CHECK-LABEL: func @zero_input
 func.func @zero_input() -> !stablehlo.token {
   // CHECK:      %0 = stablehlo.replica_id : tensor<ui32>
@@ -30,6 +59,20 @@ func.func @zero_output_ret1(%arg0 : tensor<3xi64>) -> (tensor<3xi64>) {
 func.func @zero_output_ret0(%arg0 : tensor<3xi64>) -> () {
   // CHECK:     stablehlo.return
   "stablehlo.return"() : () -> ()
+}
+
+func.func @constants() -> () {
+  // CHECK:      %c = stablehlo.constant dense<-1> : tensor<1xi64>
+  // CHECK-NEXT: %c_0 = stablehlo.constant {attr = 1 : i32} dense<[-2, 4]> : tensor<2xi64>
+  // CHECK-NEXT: %cst = stablehlo.constant() <{value = dense<[1, 2]> : tensor<2xi8>}> : () -> tensor<2x!quant.uniform<i8:f32, 2.000000e+00:15>>
+  // CHECK-NEXT: %cst_1 = stablehlo.constant() <{value = dense<3> : tensor<1xi8>}> : () -> tensor<1x!quant.uniform<i8:f32, 2.000000e+00:15>>
+  // CHECK-NEXT: %cst_2 = stablehlo.constant() <{value = dense<4> : tensor<1xi8>}> {attr = 1 : i32} : () -> tensor<1x!quant.uniform<i8:f32, 2.000000e+00:15>>
+  %cst = "stablehlo.constant"() <{value = dense<[-1]> : tensor<1xi64>}> : () -> tensor<1xi64>
+  %cst_attrs = "stablehlo.constant"() <{value = dense<[-2, 4]> : tensor<2xi64>}> {attr = 1 : i32} : () -> tensor<2xi64>
+  %cst_q = "stablehlo.constant"() {value = dense<[1, 2]> : tensor<2xi8>} : () -> tensor<2x!quant.uniform<i8:f32, 2.000000e+00:15>>
+  %cst_q_attr = stablehlo.constant() {value = dense<[3]> : tensor<1xi8>} : () -> tensor<1x!quant.uniform<i8:f32, 2.000000e+00:15>>
+  %cst_q_attrs = stablehlo.constant() {value = dense<[4]> : tensor<1xi8>, attr = 1 : i32} : () -> tensor<1x!quant.uniform<i8:f32, 2.000000e+00:15>>
+  return
 }
 
 // CHECK-LABEL: func @unary_ops
@@ -197,18 +240,20 @@ func.func @single_attr_scalar_ops(%arg0 : tensor<2x2xf32>,
                                   %arg2 : tensor<4x2xf32>,
                                   %arg3 : tensor<1xindex>,
                                   %arg4 : tensor<i32>) -> () {
-  // CHECK:      %0 = stablehlo.cholesky %arg0, lower = true : tensor<2x2xf32>
-  // CHECK-NEXT: %1 = stablehlo.concatenate %arg1, %arg2, dim = 1 : (tensor<4x1xf32>, tensor<4x2xf32>) -> tensor<4x3xf32>
-  // CHECK-NEXT: %2 = stablehlo.dynamic_iota %arg3, dim = 0 : (tensor<1xindex>) -> tensor<4xi32>
-  // CHECK-NEXT: %3 = stablehlo.iota dim = 1 : tensor<1x10xf32>
-  // CHECK-NEXT: %4 = stablehlo.get_dimension_size %arg2, dim = 1 : (tensor<4x2xf32>) -> tensor<i32>
-  // CHECK-NEXT: %5 = stablehlo.set_dimension_size %arg2, %arg4, dim = 1 : (tensor<4x2xf32>, tensor<i32>) -> tensor<4x2xf32>
-  %0 = "stablehlo.cholesky"(%arg0) { lower = true } : (tensor<2x2xf32>) -> tensor<2x2xf32>
-  %1 = "stablehlo.concatenate"(%arg1, %arg2) {dimension = 1 : i64} : (tensor<4x1xf32>, tensor<4x2xf32>) -> tensor<4x3xf32>
-  %2 = "stablehlo.dynamic_iota"(%arg3) {iota_dimension = 0 : i64} : (tensor<1xindex>) -> tensor<4xi32>
-  %3 = "stablehlo.iota"() {iota_dimension = 1 : i64}  : () -> tensor<1x10xf32>
-  %4 = "stablehlo.get_dimension_size"(%arg2) {dimension = 1 : i64} : (tensor<4x2xf32>) -> tensor<i32>
-  %5 = "stablehlo.set_dimension_size"(%arg2, %arg4) {dimension = 1 : i64} : (tensor<4x2xf32>, tensor<i32>) -> tensor<4x2xf32>
+  // CHECK:      %0 = stablehlo.cholesky %arg0 : tensor<2x2xf32>
+  // CHECK-NEXT: %1 = stablehlo.cholesky %arg0, lower = true : tensor<2x2xf32>
+  // CHECK-NEXT: %2 = stablehlo.concatenate %arg1, %arg2, dim = 1 : (tensor<4x1xf32>, tensor<4x2xf32>) -> tensor<4x3xf32>
+  // CHECK-NEXT: %3 = stablehlo.dynamic_iota %arg3, dim = 0 : (tensor<1xindex>) -> tensor<4xi32>
+  // CHECK-NEXT: %4 = stablehlo.iota dim = 1 : tensor<1x10xf32>
+  // CHECK-NEXT: %5 = stablehlo.get_dimension_size %arg2, dim = 1 : (tensor<4x2xf32>) -> tensor<i32>
+  // CHECK-NEXT: %6 = stablehlo.set_dimension_size %arg2, %arg4, dim = 1 : (tensor<4x2xf32>, tensor<i32>) -> tensor<4x2xf32>
+  %0 = "stablehlo.cholesky"(%arg0) : (tensor<2x2xf32>) -> tensor<2x2xf32>
+  %1 = "stablehlo.cholesky"(%arg0) { lower = true } : (tensor<2x2xf32>) -> tensor<2x2xf32>
+  %2 = "stablehlo.concatenate"(%arg1, %arg2) {dimension = 1 : i64} : (tensor<4x1xf32>, tensor<4x2xf32>) -> tensor<4x3xf32>
+  %3 = "stablehlo.dynamic_iota"(%arg3) {iota_dimension = 0 : i64} : (tensor<1xindex>) -> tensor<4xi32>
+  %4 = "stablehlo.iota"() {iota_dimension = 1 : i64}  : () -> tensor<1x10xf32>
+  %5 = "stablehlo.get_dimension_size"(%arg2) {dimension = 1 : i64} : (tensor<4x2xf32>) -> tensor<i32>
+  %6 = "stablehlo.set_dimension_size"(%arg2, %arg4) {dimension = 1 : i64} : (tensor<4x2xf32>, tensor<i32>) -> tensor<4x2xf32>
   "stablehlo.return"() : () -> ()
 }
 
@@ -253,12 +298,12 @@ func.func @dimension_attr(%arg0 : tensor<1x2xf32>, %arg1 : tensor<3xi32>, %arg2 
   // CHECK-NEXT: %3 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<1x2xf32>) -> tensor<2x1xf32>
   // CHECK-NEXT: %4 = stablehlo.dynamic_slice %arg2, %arg3, %arg3, sizes = [1, 4] : (tensor<3x4xi32>, tensor<i64>, tensor<i64>) -> tensor<1x4xi32>
   // CHECK-NEXT: %5 = stablehlo.pad %arg4, %arg5, low = [4], high = [4], interior = [0] : (tensor<8xf32>, tensor<f32>) -> tensor<16xf32>
-  %0 = "stablehlo.broadcast_in_dim"(%arg0) {broadcast_dimensions = dense<[0, 1]> : tensor<2xi64>} : (tensor<1x2xf32>) -> tensor<1x2x3xf32>
-  %1 = "stablehlo.broadcast"(%arg1) {broadcast_sizes = dense<[1, 2]> : tensor<2xi64>} : (tensor<3xi32>) -> tensor<1x2x3xi32>
-  %2 = "stablehlo.reverse"(%arg0) {dimensions = dense<[0, 1]> : tensor<2xi64>} : (tensor<1x2xf32>) -> tensor<1x2xf32>
-  %3 = "stablehlo.transpose"(%arg0) {permutation = dense<[1, 0]> : tensor<2xi64>} : (tensor<1x2xf32>) -> tensor<2x1xf32>
-  %4 = "stablehlo.dynamic_slice"(%arg2, %arg3, %arg3) {slice_sizes = dense<[1, 4]> : tensor<2xi64>} : (tensor<3x4xi32>, tensor<i64>, tensor<i64>) -> tensor<1x4xi32>
-  %5 = "stablehlo.pad"(%arg4, %arg5) { edge_padding_high = dense<4> : tensor<1xi64>, edge_padding_low = dense<4> : tensor<1xi64>, interior_padding = dense<0> : tensor<1xi64>} : (tensor<8xf32>, tensor<f32>) -> tensor<16xf32>
+  %0 = "stablehlo.broadcast_in_dim"(%arg0) {broadcast_dimensions = array<i64: 0, 1>} : (tensor<1x2xf32>) -> tensor<1x2x3xf32>
+  %1 = "stablehlo.broadcast"(%arg1) {broadcast_sizes = array<i64: 1, 2>} : (tensor<3xi32>) -> tensor<1x2x3xi32>
+  %2 = "stablehlo.reverse"(%arg0) {dimensions = array<i64: 0, 1>} : (tensor<1x2xf32>) -> tensor<1x2xf32>
+  %3 = "stablehlo.transpose"(%arg0) {permutation = array<i64: 1, 0>} : (tensor<1x2xf32>) -> tensor<2x1xf32>
+  %4 = "stablehlo.dynamic_slice"(%arg2, %arg3, %arg3) {slice_sizes = array<i64: 1, 4>} : (tensor<3x4xi32>, tensor<i64>, tensor<i64>) -> tensor<1x4xi32>
+  %5 = "stablehlo.pad"(%arg4, %arg5) { edge_padding_high = array<i64: 4>, edge_padding_low = array<i64: 4>, interior_padding = array<i64: 0>} : (tensor<8xf32>, tensor<f32>) -> tensor<16xf32>
   "stablehlo.return"() : () -> ()
 }
 
@@ -274,40 +319,77 @@ func.func @op_einsum(%arg0: tensor<8x16xf32>, %arg1: tensor<16x8xf32>) -> tensor
 // CHECK-LABEL: func @fft_op
 func.func @fft_op(%arg0: tensor<16xcomplex<f32>>) -> tensor<16xcomplex<f32>> {
   // CHECK: %0 = stablehlo.fft %arg0, type = FFT, length = [16] : (tensor<16xcomplex<f32>>) -> tensor<16xcomplex<f32>>
-  %0 = "stablehlo.fft"(%arg0) {fft_type = #stablehlo<fft_type FFT>, fft_length = dense<16> : tensor<1xi64>} : (tensor<16xcomplex<f32>>) -> tensor<16xcomplex<f32>>
+  %0 = "stablehlo.fft"(%arg0) {fft_type = #stablehlo<fft_type FFT>, fft_length = array<i64: 16>} : (tensor<16xcomplex<f32>>) -> tensor<16xcomplex<f32>>
   func.return %0 : tensor<16xcomplex<f32>>
 }
 
 // CHECK-LABEL: func @extensions
-func.func @extensions(%arg0 : tensor<?x?xf32, #stablehlo.type_extensions<bounds = [3, ?]>>,
-                %arg1 : tensor<i32>) -> () {
-  // CHECK:      %0 = stablehlo.set_dimension_size %arg0, %arg1, dim = 1 : (tensor<?x?xf32, #stablehlo.type_extensions<bounds = [3, ?]>>, tensor<i32>) -> tensor<*xf32>
-  %0 = "stablehlo.set_dimension_size"(%arg0, %arg1) {dimension = 1 : i64} : (tensor<?x?xf32, #stablehlo.type_extensions<bounds = [3, ?]>>, tensor<i32>) -> tensor<*xf32>
+func.func @extensions(%arg0 : tensor<?x?xf32, #stablehlo.bounds<3, ?>>,
+                      %arg1 : tensor<i32>,
+                      %arg2 : tensor<f32, #stablehlo.bounds<>>) -> () {
+  // CHECK:      %0 = stablehlo.set_dimension_size %arg0, %arg1, dim = 1 : (tensor<?x?xf32, #stablehlo.bounds<3, ?>>, tensor<i32>) -> tensor<?x?xf32>
+  // CHECK-NEXT: %1 = stablehlo.set_dimension_size %arg0, %arg1, dim = 1 : (tensor<?x?xf32, #stablehlo.bounds<3, ?>>, tensor<i32>) -> tensor<?x?xf32>
+  %0 = "stablehlo.set_dimension_size"(%arg0, %arg1) {dimension = 1 : i64} : (tensor<?x?xf32, #stablehlo.bounds<3, ?>>, tensor<i32>) -> tensor<?x?xf32>
+  %1 = "stablehlo.set_dimension_size"(%arg0, %arg1) {dimension = 1 : i64} : (tensor<?x?xf32, #stablehlo.type_extensions<bounds = [3, ?]>>, tensor<i32>) -> tensor<?x?xf32>
   "stablehlo.return"() : () -> ()
 }
 
-#CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
-}>
+func.func @dot_general(%arg0: tensor<2x2x2xi8>, %arg1: tensor<2x2x3xi8>, %arg2: tensor<2x2xi8>, %arg3: tensor<2x3xi8>) -> tensor<2x2x3xi32> {
+  //      CHECK: {{%.*}} = stablehlo.dot_general %arg0, %arg1, batching_dims = [0] x [0], contracting_dims = [2] x [1] : (tensor<2x2x2xi8>, tensor<2x2x3xi8>) -> tensor<2x2x3xi32>
+  // CHECK-NEXT: {{%.*}} = stablehlo.dot_general %arg0, %arg1, batching_dims = [0] x [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x2x2xi8>, tensor<2x2x3xi8>) -> tensor<2x2x3xi32>
+  // CHECK-NEXT: {{%.*}} = stablehlo.dot_general %arg2, %arg3, contracting_dims = [1] x [0] : (tensor<2x2xi8>, tensor<2x3xi8>) -> tensor<2x3xi32>
+  // CHECK-NEXT: {{%.*}} = stablehlo.dot_general %arg2, %arg3, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x2xi8>, tensor<2x3xi8>) -> tensor<2x3xi32>
+  %0 = "stablehlo.dot_general"(%arg0, %arg1) {
+    dot_dimension_numbers = #stablehlo.dot<
+      lhs_batching_dimensions = [0],
+      lhs_contracting_dimensions = [2],
+      rhs_batching_dimensions = [0],
+      rhs_contracting_dimensions = [1]
+    >
+  } : (tensor<2x2x2xi8>, tensor<2x2x3xi8>) -> tensor<2x2x3xi32>
+  %1 = "stablehlo.dot_general"(%arg0, %arg1) {
+    dot_dimension_numbers = #stablehlo.dot<
+      lhs_batching_dimensions = [0],
+      lhs_contracting_dimensions = [2],
+      rhs_batching_dimensions = [0],
+      rhs_contracting_dimensions = [1]
+    >,
+    precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+  } : (tensor<2x2x2xi8>, tensor<2x2x3xi8>) -> tensor<2x2x3xi32>
+  %2 = "stablehlo.dot_general"(%arg2, %arg3) {
+    dot_dimension_numbers = #stablehlo.dot<
+      lhs_batching_dimensions = [],
+      lhs_contracting_dimensions = [1],
+      rhs_batching_dimensions = [],
+      rhs_contracting_dimensions = [0]
+    >
+  } : (tensor<2x2xi8>, tensor<2x3xi8>) -> tensor<2x3xi32>
+  %3 = "stablehlo.dot_general"(%arg2, %arg3) {
+    dot_dimension_numbers = #stablehlo.dot<
+      lhs_batching_dimensions = [],
+      lhs_contracting_dimensions = [1],
+      rhs_batching_dimensions = [],
+      rhs_contracting_dimensions = [0]
+    >,
+    precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+  } : (tensor<2x2xi8>, tensor<2x3xi8>) -> tensor<2x3xi32>
+  func.return %0 : tensor<2x2x3xi32>
+}
 
-#DCSR = #sparse_tensor.encoding<{
-  dimLevelType = ["compressed", "compressed"]
-}>
 
-// CHECK-LABEL: func @encodings
-func.func @encodings(%arg0: tensor<10x20xf32, #CSR>,
-                     %arg1: tensor<10x20xf32, #DCSR>) -> tensor<10x20xf32> {
-  // CHECK:      %0 = stablehlo.add %arg0, %arg1 : (tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "dense", "compressed" ] }>>, tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "compressed", "compressed" ] }>>) -> tensor<10x20xf32>
-  // CHECK-NEXT: %1 = stablehlo.add %arg1, %arg1 : tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "compressed", "compressed" ] }>>
-  // CHECK-NEXT: %2 = stablehlo.abs %arg0 : (tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "dense", "compressed" ] }>>) -> tensor<10x20xf32>
-  // CHECK-NEXT: %3 = stablehlo.abs %arg0 : tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "dense", "compressed" ] }>>
-  // CHECK-NEXT: %4 = stablehlo.complex %arg0, %arg0 : (tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "dense", "compressed" ] }>>, tensor<10x20xf32, #sparse_tensor.encoding<{ dimLevelType = [ "dense", "compressed" ] }>>) -> tensor<10x20xcomplex<f32>>
-  %0 = "stablehlo.add"(%arg0, %arg1) : (tensor<10x20xf32, #CSR>,
-                                   tensor<10x20xf32, #DCSR>) -> tensor<10x20xf32>
-  %1 = "stablehlo.add"(%arg1, %arg1) : (tensor<10x20xf32, #DCSR>,
-                                   tensor<10x20xf32, #DCSR>) -> tensor<10x20xf32, #DCSR>
-  %2 = "stablehlo.abs"(%arg0) : (tensor<10x20xf32, #CSR>) -> tensor<10x20xf32>
-  %3 = "stablehlo.abs"(%arg0) : (tensor<10x20xf32, #CSR>) -> tensor<10x20xf32, #CSR>
-  %4 = "stablehlo.complex"(%arg0, %arg0) : (tensor<10x20xf32, #CSR>, tensor<10x20xf32, #CSR>) -> tensor<10x20xcomplex<f32>>
-  func.return %0 : tensor<10x20xf32>
+func.func @slice(%arg0: tensor<3x8xf32>, %arg1: tensor<8xf32>)
+  -> (tensor<1xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>, tensor<2x2xf32>, tensor<2x2xf32>) {
+  // CHECK: stablehlo.slice %arg1 [0:1:2] : (tensor<8xf32>) -> tensor<1xf32>
+  %slice1 = stablehlo.slice %arg1 [0:1:2] : (tensor<8xf32>) -> tensor<1xf32>
+  // CHECK: stablehlo.slice %arg1 [0:4:2] : (tensor<8xf32>) -> tensor<2xf32>
+  %slice2 = stablehlo.slice %arg1 [0:4:2] : (tensor<8xf32>) -> tensor<2xf32>
+  // CHECK: stablehlo.slice %arg1 [0:1] : (tensor<8xf32>) -> tensor<1xf32>
+  %slice3 = stablehlo.slice %arg1 [0:1:1] : (tensor<8xf32>) -> tensor<1xf32>
+  // CHECK: stablehlo.slice %arg1 [0:1] : (tensor<8xf32>) -> tensor<1xf32>
+  %slice4 = stablehlo.slice %arg1 [0:1] : (tensor<8xf32>) -> tensor<1xf32>
+  // CHECK: stablehlo.slice %arg0 [1:3, 4:8:2] : (tensor<3x8xf32>) -> tensor<2x2xf32>
+  %slice5 = stablehlo.slice %arg0 [1:3, 4:8:2] : (tensor<3x8xf32>) -> tensor<2x2xf32>
+  // CHECK: stablehlo.slice %arg0 [1:3, 4:8:2] : (tensor<3x8xf32>) -> tensor<2x2xf32>
+  %slice6 = stablehlo.slice %arg0 [1:3:1, 4:8:2] : (tensor<3x8xf32>) -> tensor<2x2xf32>
+  return %slice1, %slice2, %slice3, %slice4, %slice5, %slice6 : tensor<1xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>, tensor<2x2xf32>, tensor<2x2xf32>
 }

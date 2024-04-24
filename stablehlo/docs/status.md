@@ -19,7 +19,7 @@ one of the following tracking labels.
 - Generic labels
   - **yes**: there is a comprehensive implementation.
   - **no**: there is no implementation, but working on that is part of
-    [the roadmap](https://github.com/openxla/stablehlo#roadmap).
+    [the roadmap](https://github.com/openxla/stablehlo/blob/main/docs/roadmap.md).
     Note that Verifier can never be labeled as "no" because the ODS already
     implements some verification.
 - Customized labels for Verifier and Type Inference
@@ -28,8 +28,8 @@ one of the following tracking labels.
   - **yes\***: there is an implementation, and it's in sync with
     [XLA semantics](https://www.tensorflow.org/xla/operation_semantics).
     Since XLA semantics is oftentimes underdocumented, we are using
-    [hlo_verifier.cc](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/xla/service/hlo_verifier.cc)
-    and [shape_inference.cc](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/compiler/xla/service/shape_inference.cc)
+    [hlo_verifier.cc](https://github.com/openxla/xla/blob/main/xla/service/hlo_verifier.cc)
+    and [shape_inference.cc](https://github.com/openxla/xla/blob/main/xla/service/shape_inference.cc)
     as the reference.
   - **revisit**: there is an implementation, but it doesn't fall under "yes"
     or "yes\*" - either because we haven't audited it yet, or because we have
@@ -42,118 +42,135 @@ one of the following tracking labels.
 
 | StableHLO Op             | Specification | Verification | Type Inference | Pretty Printing | Interpreter |
 |:-------------------------|:--------------|:-------------|:---------------|:----------------|:------------|
-| abs                      | yes           | yes          | yes            | yes             | no          |
+| abs                      | yes           | yes          | yes            | yes             | yes         |
 | add                      | yes           | yes          | yes            | yes             | yes         |
-| after_all                | yes           | yes          | yes            | yes             | no          |
-| all_gather               | yes           | revisit      | no             | no              | no          |
-| all_reduce               | yes           | revisit      | yes            | no              | no          |
-| all_to_all               | yes           | revisit      | yes            | no              | no          |
+| after_all                | yes           | yes          | yes            | yes             | yes         |
+| all_gather               | yes           | revisit      | no             | no              | yes         |
+| all_reduce               | yes           | revisit      | yes            | no              | yes         |
+| all_to_all               | yes           | revisit      | yes            | no              | yes         |
 | and                      | yes           | yes          | yes            | yes             | yes         |
-| atan2                    | yes           | yes          | yes            | yes             | no          |
-| batch_norm_grad          | yes           | revisit      | yes            | no              | no          |
-| batch_norm_inference     | yes           | revisit      | yes            | no              | no          |
-| batch_norm_training      | yes           | revisit      | yes            | no              | no          |
-| bitcast_convert          | yes           | yes          | infeasible     | yes             | no          |
-| broadcast                | no            | yes\*        | yes\*          | yes             | no          |
-| broadcast_in_dim         | yes           | yes          | infeasible     | yes             | no          |
-| case                     | yes           | revisit      | yes            | no              | no          |
-| cbrt                     | yes           | yes          | yes            | yes             | no          |
+| atan2                    | yes           | yes          | yes            | yes             | yes         |
+| batch_norm_grad          | yes           | revisit      | yes            | no              | revisit     |
+| batch_norm_inference     | yes           | revisit      | yes            | no              | revisit     |
+| batch_norm_training      | yes           | revisit      | yes            | no              | revisit     |
+| bitcast_convert          | yes           | yes          | infeasible     | yes             | yes         |
+| broadcast                | no            | yes\*        | yes\*          | yes             | revisit     |
+| broadcast_in_dim         | yes           | yes          | infeasible     | yes             | yes         |
+| case                     | yes           | revisit      | yes            | no              | yes         |
+| cbrt                     | yes           | yes          | yes            | yes             | yes         |
 | ceil                     | yes           | yes          | yes            | yes             | yes         |
-| cholesky                 | yes           | yes          | yes            | yes             | no          |
-| clamp                    | yes           | revisit      | yes            | yes             | no          |
-| collective_permute       | yes           | revisit      | yes            | no              | no          |
-| compare                  | yes           | yes          | yes            | yes             | no          |
-| complex                  | yes           | yes          | yes            | yes             | no          |
+| cholesky                 | yes           | yes          | yes            | yes             | revisit     |
+| clamp                    | yes           | revisit      | yes            | yes             | yes         |
+| collective_broadcast     | yes           | revisit      | yes            | no              | yes         |
+| collective_permute       | yes           | revisit      | yes            | no              | yes         |
+| compare                  | yes           | yes          | yes            | yes             | yes         |
+| complex                  | yes           | yes          | yes            | yes             | yes         |
+| composite                | yes           | yes          | infeasible     | yes             | yes         |
 | compute_reshape_shape    | no            | revisit      | no             | yes             | no          |
-| concatenate              | yes           | yes          | yes            | yes             | no          |
+| concatenate              | yes           | yes          | yes            | yes             | yes         |
 | constant                 | yes           | yes          | yes            | yes             | yes         |
-| convert                  | yes           | yes          | infeasible     | yes             | no          |
-| convolution              | yes           | yes          | infeasible     | revisit         | no          |
+| convert                  | yes           | yes          | infeasible     | yes             | yes         |
+| convolution              | yes           | yes          | infeasible     | revisit         | yes         |
 | cosine                   | yes           | yes          | yes            | yes             | yes         |
-| count_leading_zeros      | yes           | yes          | yes            | yes             | no          |
-| create_token             | no            | yes\*        | yes\*          | yes             | no          |
-| cross-replica-sum        | no            | revisit      | yes\*          | no              | no          |
+| count_leading_zeros      | yes           | yes          | yes            | yes             | yes         |
+| create_token             | no            | yes\*        | yes\*          | yes             | revisit     |
+| cross-replica-sum        | no            | revisit      | yes\*          | no              | revisit     |
 | cstr_reshapable          | no            | revisit      | no             | yes             | no          |
-| custom_call              | yes           | yes          | infeasible     | yes             | no          |
-| divide                   | yes           | yes          | yes            | yes             | no          |
-| dot                      | no            | revisit      | infeasible     | yes             | no          |
-| dot_general              | yes           | revisit      | infeasible     | no              | no          |
+| custom_call              | yes           | yes          | infeasible     | yes             | yes         |
+| divide                   | yes           | yes          | yes            | yes             | yes         |
+| dot                      | no            | revisit      | infeasible     | yes             | revisit     |
+| dot_general              | yes           | revisit      | infeasible     | no              | yes         |
 | dynamic_broadcast_in_dim | no            | revisit      | infeasible     | no              | no          |
 | dynamic_conv             | no            | revisit      | no             | no              | no          |
 | dynamic_gather           | no            | revisit      | revisit        | no              | no          |
 | dynamic_iota             | no            | revisit      | infeasible     | yes             | no          |
 | dynamic_pad              | no            | revisit      | no             | yes             | no          |
 | dynamic_reshape          | no            | revisit      | infeasible     | yes             | no          |
-| dynamic_slice            | yes           | yes          | yes            | yes             | no          |
-| dynamic_update_slice     | yes           | yes          | yes            | yes             | no          |
-| einsum                   | no            | revisit      | no             | yes             | no          |
-| exponential              | yes           | yes          | yes            | yes             | no          |
-| exponential_minus_one    | yes           | yes          | yes            | yes             | no          |
+| dynamic_slice            | yes           | yes          | yes            | yes             | yes         |
+| dynamic_update_slice     | yes           | yes          | yes            | yes             | yes         |
+| einsum                   | no            | revisit      | no             | yes             | revisit     |
+| exponential              | yes           | yes          | yes            | yes             | yes         |
+| exponential_minus_one    | yes           | yes          | yes            | yes             | yes         |
 | fft                      | yes           | revisit      | yes            | yes             | no          |
 | floor                    | yes           | yes          | yes            | yes             | yes         |
-| gather                   | yes           | yes          | yes            | no              | no          |
-| get_dimension_size       | yes           | yes          | yes            | yes             | no          |
-| get_tuple_element        | yes           | yes          | yes            | yes             | no          |
-| if                       | yes           | revisit      | yes            | no              | no          |
-| imag                     | yes           | yes          | yes            | yes             | no          |
-| infeed                   | yes           | revisit      | infeasible     | no              | no          |
+| gather                   | yes           | yes          | yes            | no              | yes         |
+| get_dimension_size       | yes           | yes          | yes            | yes             | yes         |
+| get_tuple_element        | yes           | yes          | yes            | yes             | yes         |
+| if                       | yes           | revisit      | yes            | no              | yes         |
+| imag                     | yes           | yes          | yes            | yes             | yes         |
+| infeed                   | yes           | yes          | infeasible     | no              | yes         |
 | iota                     | yes           | yes          | infeasible     | yes             | yes         |
-| is_finite                | yes           | yes          | yes            | yes             | no          |
-| log                      | yes           | yes          | yes            | yes             | no          |
-| log_plus_one             | yes           | yes          | yes            | yes             | no          |
-| logistic                 | yes           | yes          | yes            | yes             | no          |
-| map                      | yes           | revisit      | yes            | no              | no          |
+| is_finite                | yes           | yes          | yes            | yes             | yes         |
+| log                      | yes           | yes          | yes            | yes             | yes         |
+| log_plus_one             | yes           | yes          | yes            | yes             | yes         |
+| logistic                 | yes           | yes          | yes            | yes             | yes         |
+| map                      | yes           | revisit      | yes            | no              | yes         |
 | maximum                  | yes           | yes          | yes            | yes             | yes         |
 | minimum                  | yes           | yes          | yes            | yes             | yes         |
 | multiply                 | yes           | yes          | yes            | yes             | yes         |
 | negate                   | yes           | yes          | yes            | yes             | yes         |
 | not                      | yes           | yes          | yes            | yes             | yes         |
-| optimization_barrier     | yes           | yes          | yes            | yes             | no          |
+| optimization_barrier     | yes           | yes          | yes            | yes             | yes         |
 | or                       | yes           | yes          | yes            | yes             | yes         |
-| outfeed                  | yes           | yes          | yes            | no              | no          |
-| pad                      | yes           | yes          | yes            | yes             | no          |
-| partition_id             | yes           | yes          | yes            | yes             | no          |
-| popcnt                   | yes           | yes          | yes            | yes             | no          |
-| power                    | yes           | yes          | yes            | yes             | no          |
-| real                     | yes           | yes          | yes            | yes             | no          |
+| outfeed                  | yes           | yes          | yes            | no              | yes         |
+| pad                      | yes           | yes          | yes            | yes             | yes         |
+| partition_id             | yes           | yes          | yes            | yes             | yes         |
+| popcnt                   | yes           | yes          | yes            | yes             | yes         |
+| power                    | yes           | yes          | yes            | yes             | yes         |
+| real                     | yes           | yes          | yes            | yes             | yes         |
 | real_dynamic_slice       | no            | revisit      | no             | yes             | no          |
-| recv                     | yes           | revisit      | infeasible     | no              | no          |
-| reduce                   | yes           | revisit      | yes            | revisit         | no          |
-| reduce_precision         | yes           | yes          | yes            | yes             | no          |
-| reduce_scatter           | yes           | revisit      | no             | no              | no          |
-| reduce_window            | yes           | revisit      | yes            | no              | no          |
-| remainder                | yes           | yes          | yes            | yes             | no          |
-| replica_id               | yes           | yes          | yes            | yes             | no          |
+| recv                     | yes           | yes          | infeasible     | no              | yes         |
+| reduce                   | yes           | revisit      | yes            | revisit         | yes         |
+| reduce_precision         | yes           | yes          | yes            | yes             | yes         |
+| reduce_scatter           | yes           | revisit      | no             | no              | yes         |
+| reduce_window            | yes           | revisit      | yes            | no              | yes         |
+| remainder                | yes           | yes          | yes            | yes             | yes         |
+| replica_id               | yes           | yes          | yes            | yes             | yes         |
 | reshape                  | yes           | yes          | infeasible     | yes             | yes         |
-| return                   | no            | revisit      | infeasible     | yes             | no          |
+| return                   | no            | revisit      | infeasible     | yes             | yes         |
 | reverse                  | yes           | yes          | yes            | yes             | yes         |
-| rng                      | yes           | yes          | yes            | yes             | no          |
-| rng_bit_generator        | yes           | revisit      | infeasible     | yes             | no          |
-| round_nearest_afz        | yes           | yes          | yes            | yes             | no          |
-| round_nearest_even       | yes           | yes          | yes            | yes             | no          |
-| rsqrt                    | yes           | yes          | yes            | yes             | no          |
-| scatter                  | yes           | revisit      | yes            | no              | no          |
-| select                   | yes           | yes          | yes            | yes             | no          |
-| select_and_scatter       | yes           | revisit      | yes            | no              | no          |
-| send                     | yes           | revisit      | yes            | no              | no          |
+| rng                      | yes           | yes          | yes            | yes             | revisit     |
+| rng_bit_generator        | yes           | revisit      | infeasible     | yes             | revisit     |
+| round_nearest_afz        | yes           | yes          | yes            | yes             | yes         |
+| round_nearest_even       | yes           | yes          | yes            | yes             | yes         |
+| rsqrt                    | yes           | yes          | yes            | yes             | yes         |
+| scatter                  | yes           | revisit      | yes            | no              | yes         |
+| select                   | yes           | yes          | yes            | yes             | yes         |
+| select_and_scatter       | yes           | revisit      | yes            | no              | yes         |
+| send                     | yes           | yes          | yes            | no              | yes         |
 | set_dimension_size       | no            | yes\*        | yes\*          | yes             | no          |
-| shift_left               | yes           | yes          | yes            | yes             | no          |
-| shift_right_arithmetic   | yes           | yes          | yes            | yes             | no          |
-| shift_right_logical      | yes           | yes          | yes            | yes             | no          |
-| sign                     | yes           | yes          | yes            | yes             | no          |
+| shift_left               | yes           | yes          | yes            | yes             | yes         |
+| shift_right_arithmetic   | yes           | yes          | yes            | yes             | yes         |
+| shift_right_logical      | yes           | yes          | yes            | yes             | yes         |
+| sign                     | yes           | yes          | yes            | yes             | yes         |
 | sine                     | yes           | yes          | yes            | yes             | yes         |
-| slice                    | yes           | yes          | yes            | no              | no          |
-| sort                     | yes           | yes          | yes            | no              | no          |
-| sqrt                     | yes           | yes          | yes            | yes             | no          |
+| slice                    | yes           | yes          | yes            | no              | yes         |
+| sort                     | yes           | yes          | yes            | no              | yes         |
+| sqrt                     | yes           | yes          | yes            | yes             | yes         |
 | subtract                 | yes           | yes          | yes            | yes             | yes         |
 | tanh                     | yes           | yes          | yes            | yes             | yes         |
-| torch_index_select       | no            | revisit      | no             | no              | no          |
-| trace                    | no            | revisit      | no             | yes             | no          |
+| torch_index_select       | no            | revisit      | no             | no              | revisit     |
+| trace                    | no            | revisit      | no             | yes             | revisit     |
 | transpose                | yes           | yes          | yes            | yes             | yes         |
-| triangular_solve         | yes           | revisit      | yes            | no              | no          |
-| tuple                    | yes           | yes          | yes            | yes             | no          |
-| unary_einsum             | no            | revisit      | no             | yes             | no          |
-| uniform_dequantize       | no            | yes\*        | yes\*          | yes             | no          |
-| uniform_quantize         | no            | yes\*        | infeasible     | yes             | no          |
-| while                    | yes           | revisit      | yes            | revisit         | no          |
+| triangular_solve         | yes           | revisit      | yes            | no              | revisit     |
+| tuple                    | yes           | yes          | yes            | yes             | yes         |
+| unary_einsum             | no            | revisit      | no             | yes             | revisit     |
+| uniform_dequantize       | yes           | yes          | yes            | yes             | no          |
+| uniform_quantize         | yes           | revisit      | infeasible     | yes             | no          |
+| while                    | yes           | revisit      | yes            | revisit         | yes         |
 | xor                      | yes           | yes          | yes            | yes             | yes         |
+
+## Type inference for quantized operations
+
+The `Type Inference` column from the table above is intended to focus on
+non-quantized operations. For the majority of the quantized operations, it is
+not feasible to infer the result type because the quantization parameters of
+the result types may vary from those of the operands. With the exception of
+few cases where, operand and result types must match identically, or the op
+has constraints useful to infer result type, such ops are listed below:
+`all_gather`, `all_to_all`, `case`, `collective_permute`,
+`compare`, `concatenate`, `constant`, `dynamic_slice`,
+`dynamic_update_slice`, `gather`, `get_tuple_element`, `if`, `infeed`,
+`is_finite`, `map`, `optimization_barrier`, `outfeed`, `pad`, `recv`, `reduce`,
+`reduce_scatter`, `reduce_window`, `reverse`, `scatter`, `select_and_scatter`,
+`send`, `slice`, `sort`, `transpose`, `tuple`, `uniform_dequantized`, `while`.

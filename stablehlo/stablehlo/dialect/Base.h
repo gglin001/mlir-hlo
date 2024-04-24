@@ -20,6 +20,7 @@ limitations under the License.
 #include <algorithm>
 #include <optional>
 
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Bytecode/BytecodeImplementation.h"
@@ -31,11 +32,13 @@ limitations under the License.
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectInterface.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 
 // Include order matters
@@ -54,18 +57,34 @@ inline static bool isStaticDimSize(int64_t val) {
   return !isDynamicDimSize(val);
 }
 
+// Checks whether every position in the given array contains the given value.
+bool isSplatArray(ArrayRef<int64_t> arr, int64_t val);
+
 //  Verifies that the two types have compatible shape with bounds but allows
 //  different element types.
 LogicalResult verifyCompatibleShapeWithBounds(Type type1, Type type2);
 
-// Returns true if the given types are the same for the purposes of HLO type
-// inference, accounting for special properties of quantization and sparsity.
+// Returns true if the given element types are compatible for the purposes of
+// HLO type inference, accounting for special properties of quantization and
+// sparsity.
+bool isCompatibleElementTypeForHloTypeInference(Type tp1, Type tp2);
+
+// Returns true if the given types are compatible for the purposes of HLO type
+// inference, accounting for special properties of dynamism, quantization and
+// sparsity.
 bool isCompatibleForHloTypeInference(Type tp1, Type tp2);
 
-// Returns true if the given type ranges have same types for the purposes of HLO
-// type inference, accounting for special properties of quantization and
-// sparsity.
+// Returns true if the given type ranges are compatible for the purposes of HLO
+// type inference, accounting for special properties of dynamism, quantization
+// and sparsity.
 bool isCompatibleForHloTypeInference(TypeRange tp1, TypeRange tp2);
+
+// Returns true if the given shape, expressed as a runtime value, is compatible
+// with the given type for the purposes of HLO type inference.
+// If we know that this runtime value is a constant, then we perform the check.
+// If we don't, then we return true - because shape mismatches at runtime are
+// undefined behavior.
+bool isCompatibleForHloTypeInference(Value shape1, Type tp2);
 
 // TODO(zhouxin) Move type inference related methods to TypeInference.cpp
 
@@ -75,30 +94,47 @@ std::pair<int64_t, int64_t> inferConcatenatedDimAndBound(int64_t leftSize,
                                                          int64_t rightBound);
 
 FailureOr<std::pair<int64_t, int64_t>> inferMostSpecificDimAndBound(
-    Optional<Location> location, int64_t dim, int64_t leftSize,
+    std::optional<Location> location, int64_t dim, int64_t leftSize,
     int64_t rightSize, int64_t leftBound, int64_t rightBound);
 
 FailureOr<std::pair<int64_t, int64_t>> inferLeastSpecificDimAndBound(
-    Optional<Location> location, int64_t dim, int64_t leftSize,
+    std::optional<Location> location, int64_t dim, int64_t leftSize,
     int64_t rightSize, int64_t leftBound, int64_t rightBound);
 
 // Infer single least specific return type from inputTypes with support for
 // bounds. (Size, bound) of each dimension of the return type will be merged
 // from corresponding dimensions of every inputType by extracting the least
 // specific one. Return unranked tensor if any input is unranked.
-FailureOr<Type> inferLeastSpecificType(Optional<Location> location,
+FailureOr<Type> inferLeastSpecificType(std::optional<Location> location,
                                        TypeRange inputTypes);
 
 // Infer single most specific return type from inputTypes with support for
 // bounds. (Size, bound) of each dimension of the return type will be merged
 // from corresponding dimensions of every inputType by extracting the most
 // specific one. Return unranked tensor if all inputs are unranked.
-FailureOr<Type> inferMostSpecificType(Optional<Location> location,
+FailureOr<Type> inferMostSpecificType(std::optional<Location> location,
                                       TypeRange inputTypes);
 
 LogicalResult inferMostSpecificTypeComponents(
     std::optional<Location> location, TypeRange inputTypes,
     SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes);
+
+// Matches a constant with integer value into int64_t.
+LogicalResult matchInt(Value value, int64_t &result);
+
+// Matches a constant tensor with integer values into a 1-dimensional vector.
+// Doesn't preserve the bitness or the signedness of the underlying values,
+// extracting them into int64_t.
+LogicalResult matchInts(Value value, SmallVector<int64_t> &result);
+
+// Matches a constant tensor with integer values into a 1-dimensional vector.
+// Preserves the bitness and the signedness of the underlying values.
+LogicalResult matchInts(Value value, SmallVector<APSInt> &result);
+
+// Matches a constant tensor with integer values.
+// Unlike the functions above, it doesn't return these values - it just checks
+// that the given argument is indeed a constant tensor with integer values.
+LogicalResult matchInts(Value value);
 
 // Shape derivation function that computes the shape of the result based on an
 // operand. For a 2-dimensional input tensor, this produces IR of the form
@@ -116,12 +152,12 @@ LogicalResult deriveShapeFromOperand(
     SmallVectorImpl<Value> *reifiedReturnShapes);
 
 // Type derivation function that returns a tensor type with a new element type.
-TensorType getSameShapeTensorType(TensorType tensorType, Type elementType);
+ShapedType getSameShapeTensorType(ShapedType shapedType, Type elementType);
 
 // Takes a tensor type that may have complex elements and returns a type that
 // maintains the shape, but with real numeric data types.
 //   Ex: tensor<4xcomplex<f32>>  -->  tensor<4xf32>
-Type createRealType(TensorType type);
+ShapedType createRealType(ShapedType type);
 
 // Verify bounds expressed by HLO_BoundedAttrInterface against the provided
 // type. See documentation for HLO_BoundedAttrInterface for the list of checks.
@@ -136,6 +172,34 @@ ArrayRef<int64_t> encodingToBounds(Attribute encoding);
 // bounds. Requires a prototype - an existing encoding attribute - to obtain
 // the underlying dialect that knows how to create these attributes.
 Attribute boundsToEncoding(Attribute prototype, ArrayRef<int64_t> bounds);
+
+// Get refinements for return types from an indices_of_shape_operands attribute,
+// with tuples types flattened (see `flattenTupleTypes` below).
+// If the attribute doesn't exist, returns failure.
+// If the attribute exists but is not invalid with respect to the operation,
+// reports an optional error and returns failure.
+// If the attribute is valid but not all shape operands are constants,
+// returns failure.
+LogicalResult getShapeRefinements(
+    std::optional<Location> location, Operation *operation,
+    SmallVector<ShapedTypeComponents> &refinements);
+
+// For each type in `types`, recursively flatten tuple types into `result`.
+// Result is populated via in-order traversal of tuple types in `types`, i.e.:
+//   * Flattenings of individual types from `types` follow one another in the
+//     same order as `types`.
+//   * Same for flattenings of element types of tuple types.
+void flattenTupleTypes(TypeRange types, SmallVector<Type> &result);
+
+// Does the inverse of `flattenTupleTypes` - takes `types` and recursively
+// unflattens it, creating tuple types as needed to exactly match the structure
+// of `prototype`.
+// Fails if the number of elements in flattened prototype is different from
+// the number of elements in types.
+LogicalResult unflattenTupleTypes(TypeRange prototype, TypeRange types,
+                                  SmallVector<Type> &result);
+
+ShapedType createShapedType(ShapedTypeComponents components);
 
 // This interface is implemented by both StableHLO and MHLO dialects
 // and is used as the foundation for sharing verification, type inference and
@@ -194,6 +258,10 @@ class BroadcastingElementwise
     : public mlir::OpTrait::TraitBase<ConcreteType, BroadcastingElementwise> {};
 
 template <typename ConcreteType>
+class IsCommutative
+    : public mlir::OpTrait::TraitBase<ConcreteType, IsCommutative> {};
+
+template <typename ConcreteType>
 class PairwiseSameOperandAndResultType
     : public mlir::OpTrait::TraitBase<ConcreteType,
                                       PairwiseSameOperandAndResultType> {
@@ -213,6 +281,54 @@ class PairwiseSameOperandAndResultType
                << idx;
       }
     }
+    return success();
+  }
+};
+
+template <typename ConcreteType>
+class CompatibleOperandsAndResultElementType
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      CompatibleOperandsAndResultElementType> {
+ public:
+  static LogicalResult verifyTrait(Operation *op) {
+    Type expected;
+    if (op->getNumResults() != 0) expected = op->getResult(0).getType();
+    if (op->getNumOperands() != 0) expected = op->getOperand(0).getType();
+    if (!expected) return failure();
+
+    auto typeMatch = [&](Type actual) {
+      return isCompatibleElementTypeForHloTypeInference(actual, expected);
+    };
+    auto allMatch = llvm::all_of(op->getOperandTypes(), typeMatch) &&
+                    llvm::all_of(op->getResultTypes(), typeMatch);
+    if (!allMatch) {
+      return op->emitOpError(
+          "requires compatible element types for all operands and results");
+    }
+
+    return success(allMatch);
+  }
+};
+
+template <typename ConcreteType>
+class CompatibleOperandsElementType
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      CompatibleOperandsElementType> {
+ public:
+  static LogicalResult verifyTrait(Operation *op) {
+    if (failed(mlir::OpTrait::impl::verifyAtLeastNOperands(op, 1)))
+      return failure();
+
+    Type expected = op->getOperand(0).getType();
+    auto typeMatch = [&](Type actual) {
+      return isCompatibleElementTypeForHloTypeInference(actual, expected);
+    };
+    auto allMatch = llvm::all_of(op->getOperandTypes(), typeMatch);
+    if (!allMatch) {
+      return op->emitOpError(
+          "requires compatible element types for all operands");
+    }
+
     return success();
   }
 };
@@ -244,7 +360,8 @@ class CompatibleOperandsAndResultType
   static LogicalResult inferReturnTypes(
       MLIRContext * /*context*/, std::optional<Location> location,
       ValueRange operands, DictionaryAttr /*attributes*/,
-      RegionRange /*regions*/, SmallVectorImpl<Type> &inferredReturnTypes) {
+      OpaqueProperties /*properties*/, RegionRange /*regions*/,
+      SmallVectorImpl<Type> &inferredReturnTypes) {
     // TODO(b/231358795): Review the use of InferTypeOpInterface for ops that
     // support quantization or sparsity.
     if (operands.empty())
@@ -264,15 +381,71 @@ class CompatibleOperandsAndResultType
   // (see examples in StablehloOps.cpp).
   static LogicalResult inferReturnTypeComponentsFromOperands(
       MLIRContext *context, std::optional<Location> location,
-      ValueShapeRange operands, DictionaryAttr attributes, RegionRange regions,
+      ValueShapeRange operands, DictionaryAttr attributes,
+      OpaqueProperties properties, RegionRange regions,
       SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {
     SmallVector<Type> inferredReturnTypes;
     if (failed(inferReturnTypes(context, location, operands.getValues(),
-                                attributes, regions, inferredReturnTypes)))
+                                attributes, properties, regions,
+                                inferredReturnTypes)))
       return failure();
-    auto inferredReturnType = inferredReturnTypes[0].cast<ShapedType>();
+    if (inferredReturnTypes.size() != 1) return failure();
+    auto inferredReturnType = dyn_cast<ShapedType>(inferredReturnTypes[0]);
+    if (!inferredReturnType) return failure();
     inferredReturnShapes.push_back(inferredReturnType);
     return success();
+  }
+};
+
+template <typename ConcreteType>
+struct SpeculatableIfStaticDimInOutputIsStaticInInputImplTrait
+    : public mlir::OpTrait::TraitBase<
+          ConcreteType,
+          SpeculatableIfStaticDimInOutputIsStaticInInputImplTrait> {
+  // A unary elementwise op is not speculatable if a dimension of the result
+  // type is static while the corresponding dimension in the input type is
+  // dynamic. Indeed, the input dimension could differ at runtime.
+  // If the output dimension is dynamic, there is no expectation, so there
+  // cannot be a mismatch.
+  // If the input dimension is static, the output dimension can be inferred from
+  // it, so there cannot be a mismatch.
+  mlir::Speculation::Speculatability getSpeculatability() {
+    auto op = this->getOperation();
+    auto inputType = cast<RankedTensorType>(op->getOperand(0).getType());
+    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+    for (size_t i : llvm::seq(resultType.getRank())) {
+      if (!resultType.isDynamicDim(i) && inputType.isDynamicDim(i))
+        return mlir::Speculation::NotSpeculatable;
+    }
+    return mlir::Speculation::Speculatable;
+  }
+};
+
+template <typename ConcreteType>
+struct SpeculatableIfAllInputsStaticImplTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      SpeculatableIfAllInputsStaticImplTrait> {
+  mlir::Speculation::Speculatability getSpeculatability() {
+    return llvm::all_of(this->getOperation()->getOperandTypes(),
+                        [](Type t) {
+                          return cast<RankedTensorType>(t).hasStaticShape();
+                        })
+               ? mlir::Speculation::Speculatable
+               : mlir::Speculation::NotSpeculatable;
+  }
+};
+
+template <typename ConcreteType>
+struct RecursivelySpeculatableIfAllInputsStaticImplTrait
+    : public mlir::OpTrait::TraitBase<
+          ConcreteType, RecursivelySpeculatableIfAllInputsStaticImplTrait> {
+  mlir::Speculation::Speculatability getSpeculatability() {
+    return llvm::all_of(this->getOperation()->getOperandTypes(),
+                        [](Type t) {
+                          return cast<RankedTensorType>(t).hasStaticShape();
+                        })
+               ? mlir::Speculation::RecursivelySpeculatable
+               : mlir::Speculation::NotSpeculatable;
   }
 };
 
@@ -280,4 +453,4 @@ class CompatibleOperandsAndResultType
 }  // namespace hlo
 }  // namespace mlir
 
-#endif
+#endif  // STABLEHLO_DIALECT_BASE_H

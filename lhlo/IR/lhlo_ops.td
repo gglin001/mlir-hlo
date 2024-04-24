@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -74,6 +74,32 @@ def LHLO_IotaOp : LHLO_Op<"iota", []> {
   }];
   let arguments = (ins I64Attr:$iota_dimension,
                    Arg<LHLO_Buffer, "", [MemWrite]>:$output);
+}
+
+def LHLO_CommandBufferOp: LHLO_Op<"command_buffer", []> {
+  let summary = "Command buffer operator";
+  let description = [{
+    A dummy operation that represents the submission of a command buffer. The
+    payload of this operation is not lowered from the HLO instruction, because
+    we will emit thunk from HLO.
+  }];
+  let arguments = (ins);
+}
+
+def LHLO_AsyncStartOp: LHLO_Op<"async_start", []> {
+  let summary = "Async start operator";
+  let description = [{
+    A dummy operation that represents the submission of a generic async start.
+  }];
+  let arguments = (ins);
+}
+
+def LHLO_AsyncDoneOp: LHLO_Op<"async_done", []> {
+  let summary = "Async done operator";
+  let description = [{
+    A dummy operation that represents the submission of a generic async done.
+  }];
+  let arguments = (ins);
 }
 
 //===----------------------------------------------------------------------===//
@@ -370,7 +396,7 @@ class LHLO_BinaryElementwiseOp<string mnemonic, Type BufferType = LHLO_Buffer,
       Arg<BufferType, "", [MemRead]>:$lhs,
       Arg<BufferType, "", [MemRead]>:$rhs,
       Arg<BufferType, "", [MemWrite]>:$out,
-      OptionalAttr<BroadcastDimAttr>:$broadcast_dimensions
+      OptionalAttr<I64ElementsAttr>:$broadcast_dimensions
   );
 }
 
@@ -411,7 +437,7 @@ def LHLO_ComplexOp: LHLO_Op<"complex", [SameOperandsShape]> {
       Arg<LHLO_FpBuffer, "", [MemRead]>:$lhs,
       Arg<LHLO_FpBuffer, "", [MemRead]>:$rhs,
       Arg<LHLO_ComplexBuffer, "", [MemWrite]>:$output,
-      OptionalAttr<BroadcastDimAttr>:$broadcast_dimensions
+      OptionalAttr<I64ElementsAttr>:$broadcast_dimensions
   );
 }
 
@@ -671,7 +697,7 @@ def LHLO_CompareOp: LHLO_Op<"compare", []> {
     Arg<LHLO_Buffer, "", [MemRead]>:$lhs,
     Arg<LHLO_Buffer, "", [MemRead]>:$rhs,
     Arg<LHLO_PredBuffer, "", [MemWrite]>:$out,
-    OptionalAttr<BroadcastDimAttr>:$broadcast_dimensions,
+    OptionalAttr<I64ElementsAttr>:$broadcast_dimensions,
     MHLO_ComparisonDirectionAttr:$comparison_direction,
     OptionalAttr<MHLO_ComparisonTypeAttr>:$compare_type
   );
@@ -835,7 +861,7 @@ def LHLO_BroadcastInDimOp : LHLO_Op<"broadcast_in_dim",
   let arguments = (ins
     Arg<LHLO_Buffer, "", [MemRead]>:$operand,
     Arg<LHLO_Buffer, "", [MemWrite]>:$output,
-    BroadcastDimAttr:$broadcast_dimensions
+    I64ElementsAttr:$broadcast_dimensions
   );
 }
 
@@ -1091,90 +1117,6 @@ def LHLO_ReducePrecisionOp: LHLO_Op<"reduce_precision", [SameTypeOperands]> {
     I32Attr:$exponent_bits,
     I32Attr:$mantissa_bits
   );
-}
-
-// Common base class for AllReduce, AllGather, and AllToAll.
-class LHLO_CollectiveCommunicationOp<string name, list<Trait> traits = []> :
-  LHLO_Op<name, !listconcat(traits, [SameVariadicOperandSize])> {
-  dag arguments_base = (ins
-    Arg<Variadic<LHLO_Buffer>, "", [MemRead]>:$inputs,
-    Arg<Variadic<LHLO_Buffer>, "", [MemWrite]>:$outputs,
-    I64ElementsAttr:$replica_groups,
-    DefaultValuedOptionalAttr<BoolAttr, "false">:$constrain_layout,
-    OptionalAttr<MHLO_ChannelHandle>:$channel_id,
-    DefaultValuedOptionalAttr<BoolAttr, "false">:$use_global_device_ids
-  );
-  let hasVerifier = 1;
-  let extraClassDeclaration = [{
-    // AllGather is cross replica if channel_id is not set.
-    bool IsCrossReplica() { return !getChannelId().has_value(); }
-  }];
-}
-
-def LHLO_AllGatherOp : LHLO_CollectiveCommunicationOp<"all_gather"> {
-  let summary = "AllGather operator";
-  let description = [{
-    Performs concatenation across replicas.
-
-    See https://www.tensorflow.org/xla/operation_semantics#allgather
-  }];
-  let arguments = !con(
-    arguments_base,
-    (ins I64Attr:$all_gather_dimension));
-}
-
-def LHLO_AllReduceOp : LHLO_CollectiveCommunicationOp<"all_reduce", [SameOperandsElementType]> {
-  let summary = "AllReduce operator";
-  let description = [{
-    Performs a custom reduction across replicas.
-
-    See https://www.tensorflow.org/xla/operation_semantics#allreduce.
-  }];
-  let arguments = arguments_base;
-  let regions = (region SizedRegion<1>:$computation);
-}
-
-def LHLO_ReduceScatterOp : LHLO_CollectiveCommunicationOp<"reduce_scatter", [SameOperandsElementType]> {
-  let summary = "ReduceScatter operator";
-  let description = [{
-     Performs all_reduce followed by a scatter.
-
-     See https://www.tensorflow.org/xla/operation_semantics#reducescatter
-  }];
-  let arguments = !con(
-    arguments_base,
-    (ins I64Attr:$scatter_dimension));
-  let regions = (region SizedRegion<1>:$computation);
-}
-
-def LHLO_AllToAllOp : LHLO_CollectiveCommunicationOp<"all_to_all", [SameOperandsElementType]> {
-  let arguments = !con(
-    arguments_base,
-    (ins OptionalAttr<I64Attr>:$split_dimension));
-}
-
-def LHLO_CollectivePermuteOp: LHLO_Op<"collective_permute", [SameTypeOperands]> {
-  let summary = "CollectivePermute operator";
-  let description = [{
-    CollectivePermute is a collective operation that sends and receives data
-    cross replicas.
-    Note that there are the following restrictions on the source_target_pair:
-    - Any two pairs should not have the same target replica id, and they should
-    not have the same source replica id.
-    - If a replica id is not a target in any pair, then the output on that
-    replica is a tensor consists of 0(s) with the same shape as the input.
-
-    See https://www.tensorflow.org/xla/operation_semantics#collectivepermute.
-
-  }];
-
-  let arguments = (ins
-    Arg<LHLO_Buffer, "", [MemRead]>:$operand,
-    Arg<LHLO_Buffer, "", [MemWrite]>:$output,
-    I64ElementsAttr:$source_target_pairs,
-    OptionalAttr<MHLO_ChannelHandle>:$channel_id
-  );
-  let hasVerifier = 1;
 }
 
 def LHLO_FftOp: LHLO_Op<"fft", []> {
@@ -1459,6 +1401,9 @@ def FusionOp : LHLO_Op<"fusion", [
     The XLA runtime expects this hint to be followed, as it expects a single
     kernel per HLO instruction. This restriction might be lifted in the future.
   }];
+  let arguments = (ins
+    OptionalAttr<AnyAttrOf<[StrAttr, DictionaryAttr]>>:$backend_config
+  );
   let regions = (region SizedRegion<1>:$region);
 
   let skipDefaultBuilders = 1;
@@ -1477,8 +1422,9 @@ def FusionOp : LHLO_Op<"fusion", [
 
     SmallVector<Value> getOutputBuffers() {
       SmallVector<Value> buffers;
-      for (auto store : getRegion().front().getOps<memref::TensorStoreOp>()) {
-        buffers.push_back(store.getMemref());
+      for (auto store : getRegion().front()
+          .getOps<bufferization::MaterializeInDestinationOp>()) {
+        buffers.push_back(store.getDest());
       }
       return buffers;
     }
@@ -1493,8 +1439,9 @@ def FusionOp : LHLO_Op<"fusion", [
 
     SmallVector<Value> getFusionResults() {
       SmallVector<Value> buffers;
-      for (auto store : getRegion().front().getOps<memref::TensorStoreOp>()) {
-        buffers.push_back(store.getTensor());
+      for (auto store : getRegion().front()
+          .getOps<bufferization::MaterializeInDestinationOp>()) {
+        buffers.push_back(store.getSource());
       }
       return buffers;
     }
@@ -1554,7 +1501,7 @@ def LHLO_DynamicBroadcastInDimOp : LHLO_Op<"dynamic_broadcast_in_dim",
     Arg<LHLO_Buffer, "", [MemRead]>:$operand,
     Arg<LHLO_DimensionBuffer, "", [MemRead]>:$output_dimensions,
     Arg<LHLO_Buffer, "", [MemWrite]>:$output,
-    BroadcastDimAttr:$broadcast_dimensions
+    I64ElementsAttr:$broadcast_dimensions
   );
 }
 

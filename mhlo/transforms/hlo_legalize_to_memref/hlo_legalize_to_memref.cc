@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ namespace mhlo {
 
 namespace {
 
-using bufferization::AliasingOpResultList;
+using bufferization::AliasingValueList;
 using bufferization::AnalysisState;
 using bufferization::BufferizableOpInterface;
 using bufferization::BufferizationOptions;
@@ -62,8 +62,8 @@ struct CustomCallOpInterface
     return false;  // Arguments are read-only.
   }
 
-  AliasingOpResultList getAliasingOpResults(Operation *, OpOperand &,
-                                            const AnalysisState &) const {
+  AliasingValueList getAliasingValues(Operation *, OpOperand &,
+                                      const AnalysisState &) const {
     return {};
   }
 
@@ -101,9 +101,8 @@ struct CustomCallOpInterface
       // TODO(springerm): Create alloc_tensor ops during TensorCopyInsertion.
       AnalysisState analysisState(options);
       FailureOr<Value> tensorAlloc =
-          bufferization::allocateTensorForShapedValue(
-              rewriter, op->getLoc(), result,
-              analysisState.isTensorYielded(result), options);
+          bufferization::allocateTensorForShapedValue(rewriter, op->getLoc(),
+                                                      result, options);
       if (failed(tensorAlloc)) return failure();
       auto memrefType =
           MemRefType::get(tensorType.getShape(), tensorType.getElementType());
@@ -164,68 +163,6 @@ struct CustomCallOpInterface
   }
 };
 
-struct InfeedOpInterface
-    : public BufferizableOpInterface::ExternalModel<InfeedOpInterface,
-                                                    mhlo::InfeedOp> {
-  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options) const {
-    // Allocate buffers for the outputs of infeed.
-    SmallVector<Value> bufferArgs;
-    for (OpResult result : op->getOpResults()) {
-      if (!result.getType().isa<TensorType>()) continue;
-      AnalysisState analysisState(options);
-      auto tensorType = result.getType().cast<TensorType>();
-      FailureOr<Value> tensorAlloc =
-          bufferization::allocateTensorForShapedValue(
-              rewriter, op->getLoc(), result,
-              analysisState.isTensorYielded(result), options);
-      if (failed(tensorAlloc)) return failure();
-      auto memrefType =
-          MemRefType::get(tensorType.getShape(), tensorType.getElementType());
-      bufferArgs.push_back(rewriter.create<bufferization::ToMemrefOp>(
-          op->getLoc(), memrefType, *tensorAlloc));
-    }
-    rewriter.create<lmhlo::InfeedOp>(op->getLoc(), std::nullopt, bufferArgs,
-                                     op->getAttrs());
-    // Pass the token along.
-    bufferArgs.push_back((op->getOperand(0)));
-    bufferization::replaceOpWithBufferizedValues(rewriter, op, bufferArgs);
-    return success();
-  }
-};
-
-struct OutfeedOpInterface
-    : public BufferizableOpInterface::ExternalModel<OutfeedOpInterface,
-                                                    mhlo::OutfeedOp> {
-  bool bufferizesToMemoryRead(Operation *, OpOperand &,
-                              const AnalysisState &) const {
-    return true;
-  }
-
-  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
-                               const AnalysisState &) const {
-    return false;  // Arguments are read-only.
-  }
-
-  AliasingOpResultList getAliasingOpResults(Operation *, OpOperand &,
-                                            const AnalysisState &) const {
-    return {};
-  }
-
-  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options) const {
-    // Outfeed trivially bufferizes to lmhlo. Just pass the token operand along.
-    FailureOr<Value> operandBuffer =
-        getBuffer(rewriter, op->getOperand(0), options);
-    if (failed(operandBuffer)) return failure();
-    rewriter.create<lmhlo::OutfeedOp>(op->getLoc(), std::nullopt,
-                                      *operandBuffer, op->getAttrs());
-    bufferization::replaceOpWithBufferizedValues(rewriter, op,
-                                                 {op->getOperand(1)});
-    return success();
-  }
-};
-
 struct ReshapeOpInterface
     : public BufferizableOpInterface::ExternalModel<ReshapeOpInterface,
                                                     mhlo::ReshapeOp> {
@@ -239,15 +176,9 @@ struct ReshapeOpInterface
     return false;
   }
 
-  AliasingOpResultList getAliasingOpResults(
-      Operation *op, OpOperand & /*opOperand*/,
-      const AnalysisState & /*state*/) const {
-    return {op->getResult(0)};
-  }
-
-  BufferRelation bufferRelation(Operation * /*op*/, OpResult /*opResult*/,
-                                const AnalysisState & /*state*/) const {
-    return BufferRelation::Equivalent;
+  AliasingValueList getAliasingValues(Operation *op, OpOperand & /*opOperand*/,
+                                      const AnalysisState & /*state*/) const {
+    return {{op->getResult(0), BufferRelation::Equivalent}};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -284,15 +215,9 @@ struct DynamicReshapeOpInterface
     return false;
   }
 
-  AliasingOpResultList getAliasingOpResults(
-      Operation *op, OpOperand & /*opOperand*/,
-      const AnalysisState & /*state*/) const {
-    return {op->getResult(0)};
-  }
-
-  BufferRelation bufferRelation(Operation * /*op*/, OpResult /*opResult*/,
-                                const AnalysisState & /*state*/) const {
-    return BufferRelation::Equivalent;
+  AliasingValueList getAliasingValues(Operation *op, OpOperand & /*opOperand*/,
+                                      const AnalysisState & /*state*/) const {
+    return {{op->getResult(0), BufferRelation::Equivalent}};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -322,9 +247,8 @@ struct DynamicReshapeOpInterface
       // TODO(springerm): Create alloc_tensor ops during TensorCopyInsertion.
       AnalysisState analysisState(options);
       FailureOr<Value> tensorAlloc =
-          bufferization::allocateTensorForShapedValue(
-              rewriter, op->getLoc(), *operandBuffer,
-              analysisState.isTensorYielded(reshapeOp.getResult()), options);
+          bufferization::allocateTensorForShapedValue(rewriter, op->getLoc(),
+                                                      *operandBuffer, options);
       if (failed(tensorAlloc)) return failure();
       auto memrefType =
           MemRefType::get(bufferType.getShape(), bufferType.getElementType());
@@ -448,16 +372,9 @@ struct DynamicBroadcastInDimOpInterface
     return false;
   }
 
-  AliasingOpResultList getAliasingOpResults(
-      Operation *op, OpOperand & /*opOperand*/,
-      const AnalysisState & /*state*/) const {
-    return {op->getResult(0)};
-  }
-
-  BufferRelation bufferRelation(Operation * /*op*/, OpResult /*opResult*/,
-                                const AnalysisState & /*state*/) const {
-    // The op may allocate.
-    return BufferRelation::Unknown;
+  AliasingValueList getAliasingValues(Operation *op, OpOperand & /*opOperand*/,
+                                      const AnalysisState & /*state*/) const {
+    return {{op->getResult(0), BufferRelation::Unknown}};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -503,8 +420,6 @@ std::unique_ptr<OperationPass<ModuleOp>> createLegalizeToMemrefPass() {
 void registerBufferizableOpInterfaceExternalModels(DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, MhloDialect * /*dialect*/) {
     CustomCallOp::attachInterface<CustomCallOpInterface>(*ctx);
-    InfeedOp::attachInterface<InfeedOpInterface>(*ctx);
-    OutfeedOp::attachInterface<OutfeedOpInterface>(*ctx);
     ReshapeOp::attachInterface<ReshapeOpInterface>(*ctx);
     DynamicReshapeOp::attachInterface<DynamicReshapeOpInterface>(*ctx);
     DynamicBroadcastInDimOp::attachInterface<DynamicBroadcastInDimOpInterface>(

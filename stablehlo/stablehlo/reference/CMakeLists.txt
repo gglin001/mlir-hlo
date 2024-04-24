@@ -12,12 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_mlir_library(StablehloReferenceTypes
+add_mlir_library(StablehloReferenceApi
   PARTIAL_SOURCES_INTENDED
-  Types.cpp
+  Api.cpp
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRParser
+  MLIRSupport
+  InterpreterOps
+  StablehloReferenceConfiguration
+  StablehloReferenceErrors
+  StablehloReferenceNumPy
+  StablehloReferenceOps
+  StablehloReferenceProcess
+  StablehloReferenceScope
+  StablehloReferenceTensor
+  StablehloReferenceValue
+  StablehloRegister
+)
+
+add_mlir_library(StablehloReferenceAxes
+  PARTIAL_SOURCES_INTENDED
+  Axes.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+)
+
+add_mlir_library(StablehloReferenceConfiguration
+  PARTIAL_SOURCES_INTENDED
+  Configuration.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRSupport
+  StablehloReferenceErrors
+  StablehloReferenceProcess
+  StablehloReferenceScope
 )
 
 add_mlir_library(StablehloReferenceElement
@@ -30,6 +61,15 @@ add_mlir_library(StablehloReferenceElement
   StablehloReferenceTypes
 )
 
+add_mlir_library(StablehloReferenceErrors
+  PARTIAL_SOURCES_INTENDED
+  Errors.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+  MLIRSupport
+)
+
 add_mlir_library(StablehloReferenceIndex
   PARTIAL_SOURCES_INTENDED
   Index.cpp
@@ -39,15 +79,35 @@ add_mlir_library(StablehloReferenceIndex
   MLIRSupport
 )
 
-add_mlir_library(StablehloReferenceTensor
+set(LLVM_TARGET_DEFINITIONS InterpreterOps.td)
+mlir_tablegen(InterpreterOps.h.inc -gen-op-decls)
+mlir_tablegen(InterpreterOps.cpp.inc -gen-op-defs)
+add_public_tablegen_target(InterpreterOpsIncGen)
+add_dependencies(mlir-headers InterpreterOpsIncGen)
+
+add_mlir_dialect_library(InterpreterOps
   PARTIAL_SOURCES_INTENDED
-  Tensor.cpp
+  InterpreterOps.cpp
+
+  DEPENDS
+  InterpreterOpsIncGen
 
   LINK_LIBS PUBLIC
+  StablehloReferenceValue
+  StablehloReferenceNumPy
+  StablehloReferenceOps
+  StablehloReferenceProcessGrid
   MLIRIR
-  StablehloReferenceElement
-  StablehloReferenceIndex
-  StablehloReferenceTypes
+  MLIRSupport
+)
+
+add_mlir_dialect_library(StablehloReferenceNumPy
+  PARTIAL_SOURCES_INTENDED
+  NumPy.cpp
+
+  LINK_LIBS PUBLIC
+  StablehloReferenceTensor
+  MLIRIR
 )
 
 add_mlir_library(StablehloReferenceOps
@@ -55,20 +115,86 @@ add_mlir_library(StablehloReferenceOps
   Ops.cpp
 
   LINK_LIBS PUBLIC
+  MLIRFuncDialect
   StablehloOps
+  StablehloReferenceAxes
   StablehloReferenceElement
+  StablehloReferenceScope
+  StablehloReferenceIndex
+  StablehloReferenceValue
+  StablehloReferenceProcess
+  StablehloReferenceProcessGrid
+  StablehloReferenceTensor
+  StablehloReferenceToken
+  StablehloTypeInference
+)
+
+add_mlir_library(StablehloReferenceProcess
+  PARTIAL_SOURCES_INTENDED
+  Process.cpp
+
+  LINK_LIBS PUBLIC
+  StablehloReferenceProcessGrid
   StablehloReferenceTensor
 )
 
-add_mlir_library(StablehloReferenceInterpreter
+add_mlir_library(StablehloReferenceProcessGrid
   PARTIAL_SOURCES_INTENDED
-  Interpreter.cpp
+  ProcessGrid.cpp
 
   LINK_LIBS PUBLIC
-  MLIRFuncDialect
+  MLIRIR
+  MLIRSupport
+  StablehloReferenceTensor
+)
+
+add_mlir_library(StablehloReferenceScope
+  PARTIAL_SOURCES_INTENDED
+  Scope.cpp
+
+  LINK_LIBS PUBLIC
+  StablehloReferenceValue
+  StablehloReferenceTensor
+  StablehloReferenceToken
+  MLIRSupport
+)
+
+add_mlir_library(StablehloReferenceTensor
+  PARTIAL_SOURCES_INTENDED
+  Tensor.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+  StablehloReferenceAxes
+  StablehloReferenceElement
+  StablehloReferenceIndex
+  StablehloReferenceTypes
+)
+
+add_mlir_library(StablehloReferenceToken
+  PARTIAL_SOURCES_INTENDED
+  Token.cpp
+
+  LINK_LIBS PUBLIC
   MLIRIR
   MLIRSupport
   StablehloOps
-  StablehloReferenceOps
+)
+
+add_mlir_library(StablehloReferenceTypes
+  PARTIAL_SOURCES_INTENDED
+  Types.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+)
+
+add_mlir_library(StablehloReferenceValue
+  PARTIAL_SOURCES_INTENDED
+  Value.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRIR
   StablehloReferenceTensor
+  StablehloReferenceToken
 )

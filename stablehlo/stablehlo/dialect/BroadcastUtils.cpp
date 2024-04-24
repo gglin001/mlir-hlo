@@ -22,14 +22,15 @@ limitations under the License.
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
+#include "stablehlo/dialect/Base.h"
 
 namespace mlir {
 namespace hlo {
 
 bool isLegalNumpyRankedBroadcast(Value lhs, Value rhs,
-                                 DenseIntElementsAttr broadcastDims) {
-  RankedTensorType lhsType = lhs.getType().dyn_cast<RankedTensorType>();
-  RankedTensorType rhsType = rhs.getType().dyn_cast<RankedTensorType>();
+                                 llvm::ArrayRef<int64_t> broadcastDimensions) {
+  RankedTensorType lhsType = dyn_cast<RankedTensorType>(lhs.getType());
+  RankedTensorType rhsType = dyn_cast<RankedTensorType>(rhs.getType());
   if (!lhsType || !rhsType) return false;
   if (lhsType.getRank() == rhsType.getRank()) return true;
 
@@ -37,13 +38,12 @@ bool isLegalNumpyRankedBroadcast(Value lhs, Value rhs,
   auto smallerRank = std::min(lhsType.getRank(), rhsType.getRank());
   auto largerRank = std::max(lhsType.getRank(), rhsType.getRank());
 
-  if (smallerRank != broadcastDims.getNumElements()) {
+  if (smallerRank != static_cast<int64_t>(broadcastDimensions.size()))
     return false;
-  }
   auto expectedExtents =
       llvm::seq<int64_t>(largerRank - smallerRank, largerRank);
   return std::equal(expectedExtents.begin(), expectedExtents.end(),
-                    broadcastDims.value_begin<APInt>());
+                    broadcastDimensions.begin());
 }
 
 Value computeBinaryElementwiseBroadcastingResultExtents(Location loc, Value lhs,
@@ -62,7 +62,7 @@ Value computeNaryElementwiseBroadcastingResultExtents(Location loc,
 
   int64_t resultRank = 0;
   for (Value s : shapes) {
-    auto ty = s.getType().cast<RankedTensorType>();
+    auto ty = cast<RankedTensorType>(s.getType());
     assert(ty.getRank() == 1 && "expect extent tensor type");
     if (ty.isDynamicDim(0)) {
       resultRank = ShapedType::kDynamic;

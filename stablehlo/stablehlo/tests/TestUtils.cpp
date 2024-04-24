@@ -55,20 +55,18 @@ struct InferReturnTypesPattern : public RewritePattern {
     SmallVector<Type, 4> types;
     if (failed(definingOpInt.inferReturnTypes(
             op->getContext(), op->getLoc(), definingOp->getOperands(),
-            definingOp->getAttrDictionary(), definingOp->getRegions(),
-            types))) {
+            definingOp->getAttrDictionary(), definingOp->getPropertiesStorage(),
+            definingOp->getRegions(), types)))
       return failure();
-    }
 
     // Replace the op with another pass-through op with attributes added.
     OperationState state(op->getLoc(), "hlo_test_infer.return_types",
                          op->getOperands(), op->getResultTypes(),
                          op->getAttrs());
     auto *newOp = rewriter.create(state);
-    for (const auto &it : llvm::enumerate(types)) {
+    for (const auto &it : llvm::enumerate(types))
       newOp->setAttr((StringRef("types") + Twine(it.index())).str(),
                      TypeAttr::get(it.value()));
-    }
     rewriter.replaceOp(op, {newOp->getResults()});
     return success();
   }
@@ -85,27 +83,105 @@ struct ReifyReturnTypeShapesPattern : public RewritePattern {
     if (!definingOp) return failure();
     SmallVector<Value, 4> returnShapes;
     if (failed(definingOp.reifyReturnTypeShapes(
-            rewriter, definingOp->getOperands(), returnShapes))) {
+            rewriter, definingOp->getOperands(), returnShapes)))
       return failure();
-    }
     rewriter.replaceOp(op, returnShapes);
     return success();
   }
 };
 
+LogicalResult checkSpeculatability(PatternRewriter &rewriter, Operation *op,
+                                   mlir::Speculation::Speculatability spec) {
+  if (op->getNumOperands() != 1) return failure();
+  auto definingOp =
+      op->getOperand(0).getDefiningOp<ConditionallySpeculatable>();
+  if (!definingOp || !definingOp->hasOneUse()) return failure();
+
+  if (definingOp.getSpeculatability() == spec) {
+    rewriter.eraseOp(op);
+    rewriter.eraseOp(definingOp);
+    return success();
+  }
+
+  return failure();
+}
+
+struct IsSpeculatablePattern : public RewritePattern {
+  explicit IsSpeculatablePattern(MLIRContext *context)
+      : RewritePattern("hlo_test_speculatability.is_speculatable", 1, context) {
+  }
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    return checkSpeculatability(rewriter, op, mlir::Speculation::Speculatable);
+  }
+};
+
+struct IsRecursivelySpeculatablePattern : public RewritePattern {
+  explicit IsRecursivelySpeculatablePattern(MLIRContext *context)
+      : RewritePattern("hlo_test_speculatability.is_recursively_speculatable",
+                       1, context) {}
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    return checkSpeculatability(rewriter, op,
+                                mlir::Speculation::RecursivelySpeculatable);
+  }
+};
+
+struct IsNotSpeculatablePattern : public RewritePattern {
+  explicit IsNotSpeculatablePattern(MLIRContext *context)
+      : RewritePattern("hlo_test_speculatability.is_not_speculatable", 1,
+                       context) {}
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    return checkSpeculatability(rewriter, op,
+                                mlir::Speculation::NotSpeculatable);
+  }
+};
+
 #define GEN_PASS_DEF_HLOTESTINFERPASS
+#define GEN_PASS_DEF_HLOTESTSPECULATABILITYPASS
 #include "stablehlo/tests/TestUtils.h.inc"
 
 struct HloTestInferPass : public impl::HloTestInferPassBase<HloTestInferPass> {
-  void runOnOperation() override {
-    RewritePatternSet patterns(&getContext());
-    patterns.add<InferReturnTypesPattern>(&getContext());
-    patterns.add<ReifyReturnTypeShapesPattern>(&getContext());
-    if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns)))) {
-      return signalPassFailure();
-    }
+  LogicalResult initialize(MLIRContext *context) override {
+    RewritePatternSet patterns_(context);
+    patterns_.add<InferReturnTypesPattern>(context);
+    patterns_.add<ReifyReturnTypeShapesPattern>(context);
+    patterns = std::move(patterns_);
+    return success();
   }
+
+  void runOnOperation() override {
+    if (failed(
+            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+      return signalPassFailure();
+  }
+
+ private:
+  FrozenRewritePatternSet patterns;
+};
+
+struct HloTestSpeculatabilityPass
+    : public impl::HloTestSpeculatabilityPassBase<HloTestSpeculatabilityPass> {
+  LogicalResult initialize(MLIRContext *context) override {
+    RewritePatternSet patterns_(context);
+    patterns_.add<IsSpeculatablePattern>(context);
+    patterns_.add<IsNotSpeculatablePattern>(context);
+    patterns_.add<IsRecursivelySpeculatablePattern>(context);
+    patterns = std::move(patterns_);
+    return success();
+  }
+
+  void runOnOperation() override {
+    GreedyRewriteConfig config;
+    config.maxIterations = 1;
+    config.useTopDownTraversal = true;
+    config.enableRegionSimplification = false;
+    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+  }
+
+ private:
+  FrozenRewritePatternSet patterns;
 };
 
 #define GEN_PASS_REGISTRATION

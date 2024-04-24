@@ -23,6 +23,16 @@ fi
 # LLVM source
 LLVM_SRC_DIR="$1"
 build_dir="$2"
+CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
+# Turn on building Python bindings
+MLIR_ENABLE_BINDINGS_PYTHON="${MLIR_ENABLE_BINDINGS_PYTHON:-OFF}"
+
+# Check if ccache is available and set the compiler launcher
+if command -v ccache &>/dev/null; then
+  echo "Enabling ccache for the build."
+  export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+  export CMAKE_C_COMPILER_LAUNCHER=ccache
+fi
 
 if ! [ -f "$LLVM_SRC_DIR/llvm/CMakeLists.txt" ]; then
   echo "Expected the path to LLVM to be set correctly (got '$LLVM_SRC_DIR'): can't find CMakeLists.txt"
@@ -37,18 +47,23 @@ mkdir -p "$build_dir"
 echo "Beginning build (commands will echo)"
 set -x
 
+[[ "$(uname)" != "Darwin" ]] && LLVM_ENABLE_LLD="ON" || LLVM_ENABLE_LLD="OFF"
 cmake -GNinja \
   "-H$LLVM_SRC_DIR/llvm" \
   "-B$build_dir" \
   -DLLVM_INSTALL_UTILS=ON \
-  -DLLVM_ENABLE_LLD=ON \
+  -DLLVM_ENABLE_LLD="$LLVM_ENABLE_LLD" \
   -DLLVM_ENABLE_PROJECTS=mlir \
-  -DLLVM_TARGETS_TO_BUILD="X86;NVPTX;AMDGPU" \
+  -DLLVM_TARGETS_TO_BUILD=host \
   -DLLVM_INCLUDE_TOOLS=ON \
+  -DMLIR_ENABLE_BINDINGS_PYTHON="${MLIR_ENABLE_BINDINGS_PYTHON}" \
   -DLLVM_ENABLE_BINDINGS=OFF \
+  -DLLVM_VERSION_SUFFIX="" \
+  -DCMAKE_PLATFORM_NO_VERSIONED_SONAME:BOOL=ON \
   -DLLVM_BUILD_TOOLS=OFF \
   -DLLVM_INCLUDE_TESTS=OFF \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DLLVM_ENABLE_ASSERTIONS=On
+  -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+  -DLLVM_USE_SPLIT_DWARF=ON \
+  -DLLVM_ENABLE_ASSERTIONS=ON
 
-cmake --build "$build_dir" --target all --target mlir-cpu-runner
+cmake --build "$build_dir" --target all

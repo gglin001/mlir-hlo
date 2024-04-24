@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@ limitations under the License.
 
 // This file implements logic for lowering MHLO dialect to Standard dialect.
 
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -57,7 +58,7 @@ class CompareIConvert : public OpRewritePattern<mhlo::CompareOp> {
         !rhsType.getElementType().isSignlessInteger())
       return failure();
 
-    Optional<arith::CmpIPredicate> comparePredicate = std::nullopt;
+    std::optional<arith::CmpIPredicate> comparePredicate = std::nullopt;
     switch (op.getComparisonDirection()) {
       case ComparisonDirection::EQ:
         comparePredicate = arith::CmpIPredicate::eq;
@@ -105,7 +106,7 @@ class CompareFConvert : public OpRewritePattern<mhlo::CompareOp> {
         !rhsType.getElementType().isa<FloatType>())
       return failure();
 
-    Optional<arith::CmpFPredicate> comparePredicate = std::nullopt;
+    std::optional<arith::CmpFPredicate> comparePredicate = std::nullopt;
     switch (op.getComparisonDirection()) {
       case ComparisonDirection::EQ:
         comparePredicate = arith::CmpFPredicate::OEQ;

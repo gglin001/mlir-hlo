@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -192,7 +192,7 @@ struct CanonicalizeScatterPattern : public OpRewritePattern<ScatterOp> {
         makeOperandStartIndexPermutations(
             dimsAttrs.getScatterDimsToOperandDims(), operandRank);
 
-    TypedValue<TensorType> canonicalIndices =
+    Value canonicalIndices =
         canonicalizeStartIndices(rewriter, loc, scatterOp.getScatterIndices(),
                                  dimsAttrs.getIndexVectorDim());
 
@@ -204,7 +204,8 @@ struct CanonicalizeScatterPattern : public OpRewritePattern<ScatterOp> {
         dimsAttrs.getScatterDimsToOperandDims(),
         dimsAttrs.getUpdateWindowDims(), dimsAttrs.getInsertedWindowDims());
 
-    int64_t scatterIndicesVectorSize = canonicalIndices.getType().getDimSize(1);
+    int64_t scatterIndicesVectorSize =
+        canonicalIndices.getType().cast<TensorType>().getDimSize(1);
     auto canonicalDimsAttrs = ScatterDimensionNumbersAttr::get(
         rewriter.getContext(),
         /*updateWindowDims=*/

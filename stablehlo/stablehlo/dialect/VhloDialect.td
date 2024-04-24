@@ -22,20 +22,26 @@ def VHLO_Dialect : Dialect {
   let cppNamespace = "::mlir::vhlo";
 
   let description = [{
-    A shim opset of Versioned StableHLO ops for versions 0.x.x and 1.x.x.
+    A "shallow" versioned copy of the StableHLO dialect that has been simplified
+    down to a bare minimum which is used for upgrades, downgrades, and
+    serialization/deserialization.
 
     Version log:
-      0.3.0: Bootstrap from MHLO: https://github.com/openxla/stablehlo/pull/1.
-      0.4.0: Add AllGatherOp::use_global_device_ids: https://github.com/openxla/stablehlo/pull/272.
-             Add CollectivePermuteOp::channel_handle: https://github.com/openxla/stablehlo/pull/388.
-             Add CustomCallOp::output_operand_aliases: https://github.com/openxla/stablehlo/pull/403.
-             Add PartitionIdOp: https://github.com/openxla/stablehlo/pull/673.
-             Add AllToAllOp::channel_handle: https://github.com/openxla/stablehlo/pull/794.
+      0.9.0: Initial stability guarantees.
+      0.10.0: Introduce `f8E4M3FNUZ` and `f8E5M2FNUZ` types.
+      0.11.0: Introduce `f8E4M3B11FNUZ` type.
+      0.12.0: MLIR bytecode version 1 => 3.
+      0.14.0: MLIR bytecode version 3 => 5 (revised to 4 in #1827).
+      0.15.0: MLIR bytecode version 5 => 6, use properties in VHLO.
+      0.16.0: Introduce `collective_broadcast` operation.
+      0.17.0: Allow reduce operations to promote to higher bitwidth.
+      0.18.0: Introduce `UniformQuantizedPerAxisType` type.
+      0.19.0: Introduce `composite` operation.
   }];
 
   let useDefaultAttributePrinterParser = 0;
   let useDefaultTypePrinterParser = 0;
-  let useFoldAPI = kEmitFoldAdaptorFolder;
+  let usePropertiesForAttributes = 1;
 }
 
-#endif
+#endif  // STABLEHLO_DIALECT_VHLO_DIALECT

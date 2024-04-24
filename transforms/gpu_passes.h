@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,10 +30,6 @@ class GPUModuleOp;
 #define GEN_PASS_DECL
 #include "transforms/gpu_passes.h.inc"
 
-// Create a pass which lowers a subset of lmhlo.fusion ops to gpu.launch_func
-// plus a gpu.module containing the kernel.
-std::unique_ptr<OperationPass<mlir::ModuleOp>> createGpuFusionRewritePass();
-
 // Returns array of bool attributes. The value of each element specifies whether
 // the corresponding operand is written. This attribute is attached to
 // 'gpu.launc_func' ops during the fusion rewrite pass above.
@@ -41,27 +37,11 @@ ArrayAttr getWrittenOperandsAttribute(Operation* op);
 
 /// Pass that transforms gpu modules in standard dialect to NNVM.
 std::unique_ptr<OperationPass<mlir::gpu::GPUModuleOp>>
-createGpuKernelToNvvmPass();
+createGpuKernelToNvvmPass(bool useBarePtrCallConv = false);
 
 /// Pass that transforms gpu modules in standard dialect to ROCDL.
 std::unique_ptr<OperationPass<mlir::gpu::GPUModuleOp>>
 createGpuKernelToRocdlPass();
-
-/// Creates a pipeline that converts operations in HLO dialect to GPU kernels
-/// written in a combination of LLVM and NVVM dialects, and appends the pipeline
-/// to `pm`. `blockTileDim`, `warpTileDim` and `threadTileDim` indicate the
-/// size of the subproblem that will be operated on by the block, warp, and
-/// thread level, respectively.
-void createHloToGpuPipeline(OpPassManager& pm, ArrayRef<int64_t> blockTileDim,
-                            ArrayRef<int64_t> warpTileDim,
-                            ArrayRef<int64_t> threadTileDim,
-                            bool experimentalSoftmax);
-
-/// Creates a pipeline that converts operations in HLO dialect to Triton
-/// kernels. `blockTileDim`, indicates the block-level tile size that the
-/// problem will be tiled to.
-void createHloToTritonPipeline(OpPassManager& pm,
-                               ArrayRef<int64_t> blockTileDim);
 
 #define GEN_PASS_REGISTRATION
 #include "transforms/gpu_passes.h.inc"

@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ limitations under the License.
 // This file implements logic for lowering HLO/LHLO dialect to Linalg dialect.
 
 #include <algorithm>
+#include <memory>
 #include <numeric>
 #include <string>
 #include <utility>

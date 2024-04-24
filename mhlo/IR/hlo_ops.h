@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,6 +35,11 @@ limitations under the License.
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "stablehlo/dialect/Base.h"
+
+// Forward declaration for hlo_ops_typedefs.h.inc.
+namespace mlir::mhlo::detail {
+struct AsyncBundleTypeStorage;
+}  // namespace mlir::mhlo::detail
 
 // Include order below matters.
 #include "mhlo/IR/hlo_ops_enums.h.inc"
@@ -84,6 +89,7 @@ class MhloDialect : public Dialect {
 class TokenType : public Type::TypeBase<TokenType, Type, TypeStorage> {
  public:
   using Base::Base;
+  static constexpr StringLiteral name = "mhlo.token";
 };
 
 void printConvolutionDimensions(AsmPrinter &p, ConvDimensionNumbersAttr dnums);
@@ -92,21 +98,19 @@ void printConvolutionDimensions(AsmPrinter &p, Operation *,
 ParseResult parseConvolutionDimensions(AsmParser &parser,
                                        ConvDimensionNumbersAttr &dnums);
 
-}  // end namespace mhlo
-}  // end namespace mlir
+}  // namespace mhlo
+}  // namespace mlir
 
 #define GET_OP_CLASSES
 #include "mhlo/IR/hlo_ops.h.inc"
 
-namespace mlir {
-namespace mhlo {
+namespace mlir::mhlo {
 
 SortOp createSortOp(PatternRewriter *rewriter, const Location &loc,
                     const llvm::ArrayRef<Value> &operands,
                     const llvm::ArrayRef<Type> &elementTypes, int64_t dimension,
                     bool isStable, ComparisonDirection direction);
 
-}  // end namespace mhlo
-}  // end namespace mlir
+}  // namespace mlir::mhlo
 
 #endif  // MLIR_HLO_MHLO_IR_HLO_OPS_H

@@ -1,5 +1,5 @@
 #
-# Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2020 The OpenXLA Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,31 +15,25 @@
 #
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 set(LIBS
         ${dialect_libs}
         ${conversion_libs}
+        ${extension_libs}
         MLIROptLib
 
-        AllGmlStPasses
-        GmlStDialect
-        GmlStPasses
-        LmhloDialect
-        LmhloGPUDialect
-        MhloRegisterDialects
-        MhloTestAnalysis
-        LmhloPasses
         AllMhloPasses
-        AllThloPasses
+        DeallocationPasses
+        LmhloDialect
+        LmhloPasses
         MLIRBufferTransforms
         MLIRHLOGPUTransforms
-        MLIRHLOAnalysis
-        MLIRHLOTestAnalysis
+        MhloRegisterDialects
         )
 add_llvm_executable(mlir-hlo-opt mlir-hlo-opt.cc
   DEPENDS
         MLIRLmhloPassIncGen
         MLIRMhloPassIncGen
-        MLIRThloPassIncGen
         LMHLOTransformsPassIncGen
         LMHLOGPUTransformsPassIncGen
 )

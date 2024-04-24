@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -9,6 +9,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+
+#include <string>
+#include <vector>
 
 #include "bindings/c/Attributes.h"
 #include "bindings/c/Dialects.h"
@@ -504,5 +507,30 @@ PYBIND11_MODULE(_mlirHlo, m) {
         return attributePropertyVector(self,
                                        mlirMhloTypeExtensionsGetBoundsSize,
                                        mlirMhloTypeExtensionsGetBoundsElem);
+      });
+
+  mlir::python::adaptors::mlir_attribute_subclass(
+      m, "SparsityDescriptor", mlirMhloAttributeIsASparsityDescriptor)
+      .def_classmethod(
+          "get",
+          [](py::object cls, const int64_t dimension, const int64_t n,
+             const int64_t m, MlirContext ctx) {
+            return cls(mlirMhloSparsityDescriptorGet(ctx, dimension, n, m));
+          },
+          py::arg("cls"), py::arg("dimension"), py::arg("n"), py::arg("m"),
+          py::arg("context") = py::none(),
+          "Creates a SparseDescriptor attribute with the given sparsity "
+          "configurations.")
+      .def_property_readonly(
+          "dimension",
+          [](MlirAttribute self) {
+            return mlirMhloSparsityDescriptorGetDimension(self);
+          })
+      .def_property_readonly("n",
+                             [](MlirAttribute self) {
+                               return mlirMhloSparsityDescriptorGetN(self);
+                             })
+      .def_property_readonly("m", [](MlirAttribute self) {
+        return mlirMhloSparsityDescriptorGetM(self);
       });
 }

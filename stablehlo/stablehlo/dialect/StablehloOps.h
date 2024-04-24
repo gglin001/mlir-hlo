@@ -40,6 +40,10 @@ limitations under the License.
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "stablehlo/dialect/Base.h"
+#include "stablehlo/dialect/Version.h"
+
+#define GET_TYPEDEF_CLASSES
+#include "stablehlo/dialect/StablehloTypeDefs.h.inc"
 
 // Include order matters.
 #include "stablehlo/dialect/StablehloEnums.h.inc"
@@ -48,6 +52,29 @@ limitations under the License.
 
 namespace mlir {
 namespace stablehlo {
+
+struct StablehloDialectVersion : public mlir::DialectVersion {
+  StablehloDialectVersion(int64_t major, int64_t minor, int64_t patch)
+      : dialectVersion(major, minor, patch) {}
+
+  int64_t getMajor() const { return dialectVersion.getMajor(); }
+  int64_t getMinor() const { return dialectVersion.getMinor(); }
+  int64_t getPatch() const { return dialectVersion.getPatch(); }
+
+  static StablehloDialectVersion getCurrentVersion() {
+    // The same version as VHLO as this is serialization related only.
+    auto vhloVer = vhlo::Version::getCurrentVersion();
+    return {vhloVer.getMajor(), vhloVer.getMinor(), vhloVer.getPatch()};
+  }
+
+  bool operator<(const StablehloDialectVersion &other) const {
+    return this->dialectVersion < other.dialectVersion;
+  }
+
+ private:
+  // The dialect version read from bytecode.
+  vhlo::Version dialectVersion;
+};
 
 class StablehloDialect : public Dialect {
  public:
@@ -58,16 +85,6 @@ class StablehloDialect : public Dialect {
   // value with the desired resultant type.
   Operation *materializeConstant(OpBuilder &builder, Attribute value, Type type,
                                  Location loc) override;
-
-  // Registered hook to verify region arg attributes on operations.
-  LogicalResult verifyRegionArgAttribute(mlir::Operation *op,
-                                         unsigned regionIndex,
-                                         unsigned argIndex,
-                                         mlir::NamedAttribute attr) override;
-
-  // Registered hook to verify an attribute from this dialect on operations.
-  LogicalResult verifyOperationAttribute(mlir::Operation *op,
-                                         mlir::NamedAttribute attr) override;
 
   // Parses a type registered to this dialect.
   Type parseType(DialectAsmParser &parser) const override;
@@ -80,37 +97,43 @@ class StablehloDialect : public Dialect {
 
   // Prints an attribute registered to this dialect.
   void printAttribute(Attribute attr, DialectAsmPrinter &os) const override;
-};
 
-class TokenType : public Type::TypeBase<TokenType, Type, TypeStorage> {
- public:
-  using Base::Base;
+  // Get the set dialect version.
+  std::optional<StablehloDialectVersion> getVersion() const;
+
+  // Set dialect version.
+  // Note: there is currently no validation.
+  void setVersion(std::optional<StablehloDialectVersion> version);
+
+ private:
+  std::optional<StablehloDialectVersion> version;
 };
 
 // Verifies the source target pairs attached to collective permute.
 LogicalResult verifyCollectivePermuteSourceTargetPairs(
     Operation *op, DenseIntElementsAttr attr);
 
-void printConvolutionDimensions(AsmPrinter &p, ConvDimensionNumbersAttr dnums);
+void printConvolutionDimensions(AsmPrinter &p,
+                                ConvDimensionNumbersAttr dimNums);
 void printConvolutionDimensions(AsmPrinter &p, Operation *,
-                                ConvDimensionNumbersAttr dnums);
+                                ConvDimensionNumbersAttr dimNums);
 ParseResult parseConvolutionDimensions(AsmParser &parser,
-                                       ConvDimensionNumbersAttr &dnums);
+                                       ConvDimensionNumbersAttr &dimNums);
 
+// TODO(#2216) Cleanup Attribute -> DenseArrayAttr for print/parse.
 // Custom formatting for convolution window attributes.
 void printWindowAttributes(OpAsmPrinter &p, Operation *op,
-                           std::optional<DenseIntElementsAttr> windowStrides,
+                           std::optional<Attribute> windowStrides,
                            std::optional<DenseIntElementsAttr> padding,
-                           std::optional<DenseIntElementsAttr> lhsDilation,
-                           std::optional<DenseIntElementsAttr> rhsDilation,
-                           std::optional<DenseElementsAttr> windowReversal);
+                           std::optional<Attribute> lhsDilation,
+                           std::optional<Attribute> rhsDilation,
+                           std::optional<Attribute> windowReversal);
 
-ParseResult parseWindowAttributes(OpAsmParser &parser,
-                                  DenseIntElementsAttr &windowStrides,
+ParseResult parseWindowAttributes(OpAsmParser &parser, Attribute &windowStrides,
                                   DenseIntElementsAttr &padding,
-                                  DenseIntElementsAttr &lhsDilation,
-                                  DenseIntElementsAttr &rhsDilation,
-                                  DenseElementsAttr &windowReversal);
+                                  Attribute &lhsDilation,
+                                  Attribute &rhsDilation,
+                                  Attribute &windowReversal);
 
 }  // end namespace stablehlo
 }  // end namespace mlir

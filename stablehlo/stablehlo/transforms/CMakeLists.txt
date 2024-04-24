@@ -16,39 +16,47 @@ set(LLVM_TARGET_DEFINITIONS Passes.td)
 mlir_tablegen(Passes.h.inc -gen-pass-decls)
 add_public_tablegen_target(PassesIncGen)
 
-add_mlir_dialect_library(StablehloTypeConversion
-  PARTIAL_SOURCES_INTENDED
-  TypeConversion.cpp
-
-  LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRSupport
-  MLIRFuncDialect
-  StablehloOps
-  VhloOps
-)
+set(LLVM_TARGET_DEFINITIONS ChloDecompositionPatterns.td)
+mlir_tablegen(ChloDecompositionPatterns.h.inc --gen-rewriters)
+add_public_tablegen_target(ChloDecompositionPatternsIncGen)
 
 add_mlir_dialect_library(StablehloPasses
   PARTIAL_SOURCES_INTENDED
+  ChloLegalizeToStablehlo.cpp
+  PassPipelines.cpp
+  ShapeLegalizeToStablehlo.cpp
+  StablehloAggressiveSimplification.cpp
+  StablehloCanonicalizeDynamism.cpp
+  StablehloLegalizeCompositeToCall.cpp
+  StablehloInstrumentWithProbe.cpp
   StablehloLegalizeToVhlo.cpp
+  StablehloRefineArguments.cpp
   StablehloRefineShapes.cpp
   VhloLegalizeToStablehlo.cpp
   VhloToVersion.cpp
 
   DEPENDS
+  ChloDecompositionPatternsIncGen
   PassesIncGen
 
   LINK_LIBS PUBLIC
   ChloOps
+  InterpreterOps
+  MLIRArithDialect
+  MLIRAsmParser
+  MLIRComplexDialect
+  MLIRDialectUtils
   MLIRFuncDialect
-  MLIRInferTypeOpInterface
+  MLIRFunctionInterfaces
   MLIRIR
-  MLIRSupport
+  MLIRInferTypeOpInterface
   MLIRQuantDialect
+  MLIRSupport
   MLIRTensorDialect
   MLIRTransformUtils
-  StablehloTypeConversion
-  StablehloTypeInference
+  StablehloBase
+  StablehloBroadcastUtils
   StablehloOps
+  StablehloTypeInference
   VhloOps
 )

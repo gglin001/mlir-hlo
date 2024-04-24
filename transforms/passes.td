@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,48 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_HLO_TRANSFORMS_PASSES
-#define TENSORFLOW_COMPILER_MLIR_HLO_TRANSFORMS_PASSES
+#ifndef MLIR_HLO_TRANSFORMS_PASSES
+#define MLIR_HLO_TRANSFORMS_PASSES
 
 include "mlir/Pass/PassBase.td"
-
-def BufferReuse : Pass<"buffer-reuse", "func::FuncOp"> {
-  let summary = "Reuses already allocated buffers to save allocation "
-                "operations if it is provably safe.";
-  let description = [{
-    This pass tries to reuse already allocated buffers if they have the same
-    size, are in the right appearance order and have no interference among
-    themselves.
-  }];
-  let constructor = "createBufferReusePass()";
-}
-
-def CopyRemoval : Pass<"copy-removal", "func::FuncOp"> {
-  let summary = "Removes redundant operations that implement a "
-                "CopyOpInterface, if the intersection of the useranges from"
-                "copy source and target only contains the CopyOp.";
-  let constructor = "createCopyRemovalPass()";
-}
-
-def BufferPacking : Pass<"buffer-packing", "func::FuncOp"> {
-  let summary = "Pass to pack allocated buffer to reduce memory consumption.";
-  let description = [{The pass tries to pack smaller buffers into larger buffers.
-  To do this, it sorts all allocated buffers by multiple criteria depends on the
-  selected window-size.
-  After this sorting, the buffers are checked whether subsequent buffers can be
-  packed into them.}];
-  let dependentDialects = ["func::FuncDialect","memref::MemRefDialect",
-    "arith::ArithDialect"];
-  let constructor = "createBufferPackingPass()";
-  let options = [
-   Option<"window_size_", "window-size", "unsigned",
-           /*default=*/"5", "The window size blurs the start position of an"
-           "allocated buffer. Buffers allocated in the same sliding window area"
-           "are treated equally in terms of starting position, withing the"
-           "sliding window area they are sorted by memory size."
-           "A window size of zero sorts the buffers only by memory size.">,
-  ];
-}
 
 def CollapseParallelLoopsTo1DPass : Pass<"collapse-parallel-loops-to-1d"> {
   let summary = "Collapses multidimensional loops.";
@@ -86,25 +48,7 @@ def TileLoopsPass : Pass<"tile-loops", "func::FuncOp"> {
                "factor in each dimension, expressed as the number of elements "
                "in that dimension.", "llvm::cl::ZeroOrMore">,
   ];
-  let dependentDialects = ["AffineDialect"];
-}
-
-def MemoryCount : Pass<"memory-count", "func::FuncOp"> {
-  let summary = "Test pass to count the allocated memory of a module.";
-  let description = [{A test pass that prints the size of allocated memory of a
-  module.}];
-  let constructor = "createMemoryCountPass()";
-}
-
-def TestUserange : Pass<"test-print-userange", "func::FuncOp"> {
-  let summary = "Test pass for checking userange intervals.";
-  let constructor = "createTestUserangePass()";
-}
-
-def TestShapeComponentAnalysis : Pass<"test-print-shape-components",
-                                      "func::FuncOp"> {
-  let summary = "Test pass for analyzing shape components.";
-  let constructor = "createTestShapeComponentAnalysisPass()";
+  let dependentDialects = ["affine::AffineDialect"];
 }
 
 def LowerIndexCastPass
@@ -149,14 +93,29 @@ def PropagateStaticShapesToKernelPass : Pass<"propagate-static-shapes", "ModuleO
 def GenericHostToLLVMPass : Pass<"generic-host-to-llvm", "ModuleOp"> {
   let summary = "Pass to lower common dialects resulting from HLO to LLVM.";
   let constructor = "hlo::createGenericHostToLLVMPass()";
-  let options = [];
+  let options = [
+      Option<"enableAvx2", "enable-avx2", "bool",
+             /*default=*/"false", "Whether to enable avx2">,
+  ];
+  let dependentDialects = [
+    "::mlir::LLVM::LLVMDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::cf::ControlFlowDialect",
+    "::mlir::complex::ComplexDialect",
+    "::mlir::func::FuncDialect",
+    "::mlir::math::MathDialect",
+    "::mlir::memref::MemRefDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::x86vector::X86VectorDialect",
+  ];
 }
 
 def UnbufferizePass : Pass<"unbufferize", "mlir::func::FuncOp"> {
   let summary = "Unbufferize partially bufferized functions.";
   let description = [{
-    Removes bufferization.to_tensor and memref.tensor_store ops that are the
-    result of XLA bufferizing during HLO to MHLO transformation.
+    Removes bufferization.to_tensor and bufferization.materialize_in_destination
+    ops that are the result of XLA bufferizing during HLO to MHLO
+    transformation.
   }];
   let constructor = "hlo::createUnbufferizePass()";
 }
@@ -172,6 +131,18 @@ def AllocToArgPass : Pass<"alloc-to-arg", "mlir::func::FuncOp"> {
     Replaces memref.alloc uses with a new argument of the parent function.
   }];
   let constructor = "hlo::createAllocToArgPass()";
+}
+
+def NaiveCopyRemovalPass : Pass<"naive-copy-removal", "mlir::func::FuncOp"> {
+  let summary = "Pass to remove redundant `memref.copy` ops.";
+  let constructor = "createNaiveCopyRemovalPass()";
+  let dependentDialects = ["memref::MemRefDialect"];
+}
+
+def VectorizeCopyPass : Pass<"vectorize-copy", "mlir::func::FuncOp"> {
+  let summary = "Pass to vectorize `memref.copy`.";
+  let constructor = "createVectorizeCopyPass()";
+  let dependentDialects = ["scf::SCFDialect", "vector::VectorDialect"];
 }
 
 #endif // TENSORFLOW_COMPILER_MLIR_HLO_TRANSFORMS_PASSES

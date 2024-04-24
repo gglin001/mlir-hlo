@@ -1,5 +1,5 @@
 #
-# Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2020 The OpenXLA Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -44,9 +44,15 @@ add_mlir_library(MhloPasses
   expand_hlo_tuples/expand_hlo_tuples.cc
   expand_ops_simplifier/expand_ops_simplifier.cc
   group_reduction_dimensions/group_reduction_dimensions.cc
+  legalize_broadcast_to_broadcast_in_dim/legalize_broadcast_to_broadcast_in_dim.cc
+  legalize_create_token_to_after_all/legalize_create_token_to_after_all.cc
+  legalize_cross_replica_sum_to_all_reduce/legalize_cross_replica_sum_to_all_reduce.cc
+  legalize_dot_general_to_dot/legalize_dot_general_to_dot.cc
+  legalize_dot_to_dot_general/legalize_dot_to_dot_general.cc
   legalize_einsum_to_dot_general/legalize_einsum_to_dot_general.cc
   legalize_gather_to_torch_index_select/legalize_gather_to_torch_index_select.cc
   legalize_shape_computations/legalize_shape_computations.cc
+  legalize_torch_index_select_to_gather/legalize_torch_index_select_to_gather.cc
   legalize_trigonometric_to_approximation/legalize_trigonometric_to_approximation.cc
   lower_complex/lower_complex.cc
   lower_complex/lower_complex_patterns.td
@@ -54,6 +60,7 @@ add_mlir_library(MhloPasses
   materialize_broadcasts/materialize_broadcasts.cc
   materialize_broadcasts/materialize_broadcasts_pass.cc
   merge_assuming_ops/merge_assuming_ops.cc
+  mhlo_canonicalize_dot/mhlo_canonicalize_dot.cc
   mhlo_canonicalize_gather/mhlo_canonicalize_gather.cc
   mhlo_canonicalize_reduction/mhlo_canonicalize_reduction.cc
   mhlo_canonicalize_scatter/mhlo_canonicalize_scatter.cc
@@ -61,12 +68,11 @@ add_mlir_library(MhloPasses
   prepare_for_export/prepare_for_export.cc
   optimize_mhlo/optimize_mhlo.cc
   optimize_mhlo/optimize_mhlo_pass.cc
-  rank_specialization/rank_specialization.cc
   restrict_max_rank/restrict_max_rank.cc
+  shape_legalize_to_hlo/shape_legalize_to_hlo.cc
   shape_reification/shape_reification_pass.cc
   shape_simplification/shape_simplification.cc
   sink_constants_to_control_flow/sink_constants_to_control_flow.cc
-  sparse_rewriting/sparse_rewriting.cc
   symbolic_shape_optimization/symbolic_shape_optimization.cc
   test_infer_shaped_type/test_infer_shaped_type_pass.cc
   unfuse_batch_norm/unfuse_batch_norm.cc
@@ -97,50 +103,25 @@ add_mlir_library(MhloPasses
   StablehloBroadcastUtils
 )
 
-add_mlir_library(MhloToThloConversion
-  legalize_mhlo_to_thlo/legalize_mhlo_to_thlo.cc
-
-  DEPENDS
-  MLIRMhloPassIncGen
-  THLODialect
-
-  LINK_COMPONENTS
-  Core
-
-  LINK_LIBS PUBLIC
-  MhloDialect
-  MhloToArithmeticConversion
-  MhloTypeConversion
-  THLODialect
-  MLIRIR
-  MLIRMhloUtils
-  MLIRPass
-  MLIRTransformUtils
-)
-
-add_mlir_library(MhloToLhloConversion
-  hlo_legalize_to_lhlo/hlo_legalize_to_lhlo.cc
+add_mlir_library(MhloQuantToIntConversion
+  mhlo_quant_legalize_to_int/mhlo_quant_legalize_to_int.cc
 
   DEPENDS
   MLIRhlo_opsIncGen
-  MLIRlhlo_opsIncGen
   MLIRMhloPassIncGen
 
   LINK_COMPONENTS
   Core
 
   LINK_LIBS PUBLIC
-  MhloDialect
   LmhloDialect
-  MLIRArithDialect
-  MLIRArithTransforms
-  MLIRFuncTransforms
+  MhloDialect
+  MhloTypeConversion
   MLIRIR
   MLIRPass
   MLIRMathDialect
-  MLIRShapeOpsTransforms
-  MLIRTransformUtils
   MLIRTransforms
+  MLIRTransformUtils
 )
 
 add_mlir_library(MhloToMemrefConversion
@@ -211,9 +192,7 @@ add_mlir_library(MhloToStandard
 )
 
 add_mlir_library(ChloPasses
-  chlo_legalize_to_hlo/chlo_legalize_to_hlo.cc
   chlo_legalize_to_hlo/chlo_legalize_to_hlo_pass.cc
-  sparse_chlo_legalize_to_linalg/sparse_chlo_legalize_to_linalg.cc
 
   DEPENDS
   MLIRhlo_opsIncGen
@@ -248,6 +227,7 @@ add_mlir_library(MhloToLinalg
   HloToLinalgUtils
   LmhloDialect
   MhloDialect
+  MhloRngUtils
   MhloToArithmeticConversion
   MhloTypeConversion
   MLIRBufferizationDialect
@@ -326,27 +306,13 @@ add_library(AllMhloPasses INTERFACE)
 target_link_libraries(AllMhloPasses INTERFACE
   ChloPasses
   MhloPasses
-  MhloToLhloConversion
+  MhloQuantToIntConversion
   MhloToArithmeticConversion
   MhloToMemrefConversion
   MhloToStandard
   HloToLinalgUtils
   MhloToLinalg
-  MhloToThloConversion
   MhloShapeOpsToStandard
   MhloToStablehlo
   StablehloToMhlo
-)
-
-add_library(AllGmlStPasses INTERFACE)
-target_link_libraries(AllGmlStPasses INTERFACE
-  GmlStPasses
-  GmlStTestPasses
-  MLIRFuncDialect
-  MLIRPass
-)
-
-add_library(AllThloPasses INTERFACE)
-target_link_libraries(AllThloPasses INTERFACE
-  ThloPasses
 )

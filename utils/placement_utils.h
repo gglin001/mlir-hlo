@@ -1,7 +1,4 @@
-#ifndef MLIR_HLO_UTILS_PLACEMENT_UTILS_H
-#define MLIR_HLO_UTILS_PLACEMENT_UTILS_H
-
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,10 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "llvm/ADT/StringRef.h"
+#ifndef MLIR_HLO_UTILS_PLACEMENT_UTILS_H
+#define MLIR_HLO_UTILS_PLACEMENT_UTILS_H
 
-#ifndef TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_UTILS_PLACEMENT_UTIL_H_
-#define TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_UTILS_PLACEMENT_UTIL_H_
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir {
 namespace mhlo {
@@ -32,6 +29,4 @@ constexpr llvm::StringRef cGpu = "gpu";
 }  // namespace mhlo
 }  // namespace mlir
 
-#endif  // TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_UTILS_PLACEMENT_UTIL_H_
-
-#endif
+#endif  // MLIR_HLO_UTILS_PLACEMENT_UTILS_H

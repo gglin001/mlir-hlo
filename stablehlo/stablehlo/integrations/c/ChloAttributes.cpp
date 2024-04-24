@@ -27,18 +27,19 @@ MlirAttribute chloComparisonDirectionAttrGet(MlirContext ctx,
                                              MlirStringRef value) {
   std::optional<mlir::chlo::ComparisonDirection> comparisonDirection =
       mlir::chlo::symbolizeComparisonDirection(unwrap(value));
-  if (!comparisonDirection) llvm_unreachable("Invalid value.");
+  if (!comparisonDirection) llvm::report_fatal_error("Invalid value.");
   return wrap(mlir::chlo::ComparisonDirectionAttr::get(
       unwrap(ctx), comparisonDirection.value()));
 }
 
 bool chloAttributeIsAComparisonDirectionAttr(MlirAttribute attr) {
-  return unwrap(attr).isa<mlir::chlo::ComparisonDirectionAttr>();
+  return llvm::isa<mlir::chlo::ComparisonDirectionAttr>(unwrap(attr));
 }
 
 MlirStringRef chloComparisonDirectionAttrGetValue(MlirAttribute attr) {
   return wrap(mlir::chlo::stringifyComparisonDirection(
-      unwrap(attr).cast<mlir::chlo::ComparisonDirectionAttr>().getValue()));
+      llvm::cast<mlir::chlo::ComparisonDirectionAttr>(unwrap(attr))
+          .getValue()));
 }
 
 //===----------------------------------------------------------------------===//
@@ -48,16 +49,16 @@ MlirStringRef chloComparisonDirectionAttrGetValue(MlirAttribute attr) {
 MlirAttribute chloComparisonTypeAttrGet(MlirContext ctx, MlirStringRef value) {
   std::optional<mlir::chlo::ComparisonType> comparisonType =
       mlir::chlo::symbolizeComparisonType(unwrap(value));
-  if (!comparisonType) llvm_unreachable("Invalid value.");
+  if (!comparisonType) llvm::report_fatal_error("Invalid value.");
   return wrap(
       mlir::chlo::ComparisonTypeAttr::get(unwrap(ctx), comparisonType.value()));
 }
 
 bool chloAttributeIsAComparisonTypeAttr(MlirAttribute attr) {
-  return unwrap(attr).isa<mlir::chlo::ComparisonTypeAttr>();
+  return llvm::isa<mlir::chlo::ComparisonTypeAttr>(unwrap(attr));
 }
 
 MlirStringRef chloComparisonTypeAttrGetValue(MlirAttribute attr) {
   return wrap(mlir::chlo::stringifyComparisonType(
-      unwrap(attr).cast<mlir::chlo::ComparisonTypeAttr>().getValue()));
+      llvm::cast<mlir::chlo::ComparisonTypeAttr>(unwrap(attr)).getValue()));
 }

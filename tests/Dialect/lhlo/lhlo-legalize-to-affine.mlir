@@ -10,7 +10,7 @@ func.func @min_op(%lhs: memref<4x3x2x1xf32>, %rhs: memref<4x3x2x1xf32>,
   // CHECK-NEXT:       affine.for %[[L:.*]] = 0 to 1 {
   // CHECK-NEXT:         %[[LHS:.*]] = affine.load %{{.*}}[%[[I]], %[[J]], %[[K]], %[[L]]] : memref<4x3x2x1xf32>
   // CHECK-NEXT:         %[[RHS:.*]] = affine.load %{{.*}}[%[[I]], %[[J]], %[[K]], %[[L]]] : memref<4x3x2x1xf32>
-  // CHECK-NEXT:         %[[MIN:.*]] = arith.minf %[[LHS]], %[[RHS]] : f32
+  // CHECK-NEXT:         %[[MIN:.*]] = arith.minimumf %[[LHS]], %[[RHS]] : f32
   // CHECK-NEXT:         affine.store %[[MIN]], %{{.*}}[%[[I]], %[[J]], %[[K]], %[[L]]] : memref<4x3x2x1xf32>
   // CHECK:      return
   "lmhlo.minimum"(%lhs, %rhs, %result) {name = "min.1"} :
@@ -68,7 +68,7 @@ func.func @int_div_op(%lhs: memref<7xi32>, %rhs: memref<7xi32>,
 // CHECK-LABEL: func @float_max_op
 func.func @float_max_op(%lhs: memref<7xf32>, %rhs: memref<7xf32>,
                    %result: memref<7xf32>) -> () {
-  // CHECK: arith.maxf %{{.*}}, %{{.*}} : f32
+  // CHECK: arith.maximumf %{{.*}}, %{{.*}} : f32
   "lmhlo.maximum"(%lhs, %rhs, %result) {name = "max.1"}
       : (memref<7xf32>, memref<7xf32>, memref<7xf32>) -> ()
   func.return
@@ -87,7 +87,7 @@ func.func @int_max_op(%lhs: memref<7xi32>, %rhs: memref<7xi32>,
 // CHECK-LABEL: func @float_min_op
 func.func @float_min_op(%lhs: memref<7xf32>, %rhs: memref<7xf32>,
                    %result: memref<7xf32>) -> () {
-  // CHECK: arith.minf %{{.*}}, %{{.*}} : f32
+  // CHECK: arith.minimumf %{{.*}}, %{{.*}} : f32
   "lmhlo.minimum"(%lhs, %rhs, %result) {name = "min.1"}
       : (memref<7xf32>, memref<7xf32>, memref<7xf32>) -> ()
   func.return
@@ -282,9 +282,9 @@ func.func @gather_2(%arg0: memref<16x11xf32>, %arg1: memref<5x2xi32>, %arg2: mem
   "lmhlo.copy"(%0, %arg2) : (memref<5x8x6xf32>, memref<5x8x6xf32>) -> ()
   "lmhlo.terminator"() : () -> ()
 }
-// CHECK-NEXT: %[[zero:.*]] = arith.constant 0.000000e+00 : f32
-// CHECK-NEXT: %c0 = arith.constant 0 : index
-// CHECK-NEXT: %c1 = arith.constant 1 : index
+// CHECK-DAG:  %[[zero:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-DAG:  %c0 = arith.constant 0 : index
+// CHECK-DAG:  %c1 = arith.constant 1 : index
 // CHECK-NEXT: %[[temp_output:.*]] = memref.alloc() : memref<5x8x6xf32>
 // CHECK-NEXT: affine.for %{{.*}} = 0 to 5 {
 // CHECK-NEXT:   affine.for %{{.*}} = 0 to 8 {
@@ -336,9 +336,9 @@ func.func @gather_3(%arg0: memref<16x11xf16>, %arg1: memref<4x2x5xi32>, %arg2: m
   "lmhlo.copy"(%0, %arg2) : (memref<4x5x8x6xf16>, memref<4x5x8x6xf16>) -> ()
   "lmhlo.terminator"() : () -> ()
 }
-// CHECK-NEXT: %[[zero:.*]] = arith.constant 0.000000e+00 : f16
-// CHECK-NEXT: %c0 = arith.constant 0 : index
-// CHECK-NEXT: %c1 = arith.constant 1 : index
+// CHECK-DAG:  %[[zero:.*]] = arith.constant 0.000000e+00 : f16
+// CHECK-DAG:  %c0 = arith.constant 0 : index
+// CHECK-DAG:  %c1 = arith.constant 1 : index
 // CHECK-NEXT: %[[temp_output:.*]] = memref.alloc() : memref<4x5x8x6xf16>
 // CHECK-NEXT: affine.for %{{.*}} = 0 to 4 {
 // CHECK-NEXT:   affine.for %{{.*}} = 0 to 5 {
@@ -453,11 +453,11 @@ func.func @gather_6(%arg0: memref<16x11x10x9xf32>, %arg1: memref<5x4xi32>, %arg2
    "lmhlo.copy"(%0, %arg2) : (memref<5x8x6x5x4xf32>, memref<5x8x6x5x4xf32>) -> ()
    "lmhlo.terminator"() : () -> ()
 }
-// CHECK-NEXT: %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
-// CHECK-NEXT: %[[ZERO_IDX:.*]] = arith.constant 0 : index
-// CHECK-NEXT: %[[ONE_IDX:.*]] = arith.constant 1 : index
-// CHECK-NEXT: %[[TWO_IDX:.*]] = arith.constant 2 : index
-// CHECK-NEXT: %[[THREE_IDX:.*]] = arith.constant 3 : index
+// CHECK-DAG:  %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-DAG:  %[[ZERO_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG:  %[[ONE_IDX:.*]] = arith.constant 1 : index
+// CHECK-DAG:  %[[TWO_IDX:.*]] = arith.constant 2 : index
+// CHECK-DAG:  %[[THREE_IDX:.*]] = arith.constant 3 : index
 // CHECK-NEXT: %[[RESULT:.*]] = memref.alloc() : memref<5x8x6x5x4xf32>
 // CHECK-NEXT: affine.for %{{.*}} = 0 to 5 {
 // CHECK-NEXT:  affine.for %{{.*}} = 0 to 8 {

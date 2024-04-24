@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2020 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ limitations under the License.
 #include "utils/cycle_detector.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -269,7 +270,7 @@ bool GraphCycles::IsReachable(int32_t x, int32_t y) {
   return reachable;
 }
 
-llvm::Optional<int32_t> GraphCycles::ContractEdge(int32_t a, int32_t b) {
+std::optional<int32_t> GraphCycles::ContractEdge(int32_t a, int32_t b) {
   assert(HasEdge(a, b));
   RemoveEdge(a, b);
 

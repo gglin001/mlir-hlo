@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,9 +48,9 @@ Type convertShapedType(ShapedType shapedType) {
   return shapedType;
 }
 
-llvm::Optional<Value> materializeCastFromIllegal(OpBuilder& builder, Type type,
-                                                 ValueRange inputs,
-                                                 Location loc) {
+std::optional<Value> materializeCastFromIllegal(OpBuilder& builder, Type type,
+                                                ValueRange inputs,
+                                                Location loc) {
   Type fromType = getElementTypeOrSelf(inputs[0].getType());
   Type toType = getElementTypeOrSelf(type);
   if ((!fromType.isSignedInteger() && !fromType.isUnsignedInteger()) ||
@@ -61,9 +61,8 @@ llvm::Optional<Value> materializeCastFromIllegal(OpBuilder& builder, Type type,
       ->getResult(0);
 }
 
-llvm::Optional<Value> materializeCastToIllegal(OpBuilder& builder, Type type,
-                                               ValueRange inputs,
-                                               Location loc) {
+std::optional<Value> materializeCastToIllegal(OpBuilder& builder, Type type,
+                                              ValueRange inputs, Location loc) {
   Type fromType = getElementTypeOrSelf(inputs[0].getType());
   Type toType = getElementTypeOrSelf(type);
   if (!fromType.isSignlessInteger() ||
@@ -74,8 +73,8 @@ llvm::Optional<Value> materializeCastToIllegal(OpBuilder& builder, Type type,
       ->getResult(0);
 }
 
-llvm::Optional<Value> scalarToTensor(OpBuilder& builder, Type /*type*/,
-                                     ValueRange inputs, Location loc) {
+std::optional<Value> scalarToTensor(OpBuilder& builder, Type /*type*/,
+                                    ValueRange inputs, Location loc) {
   assert(inputs.size() == 1);
   if (inputs.front().getType().isa<ShapedType>()) {
     return std::nullopt;

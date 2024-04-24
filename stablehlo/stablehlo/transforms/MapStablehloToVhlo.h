@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <type_traits>
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/VhloOps.h"
 
@@ -50,9 +51,9 @@ using StablehloToVhloOp = typename StablehloToVhloOpImpl<StablehloOpTy>::Type;
 MAP_STABLEHLO_TO_VHLO(AbsOp, V1)
 MAP_STABLEHLO_TO_VHLO(AddOp, V1)
 MAP_STABLEHLO_TO_VHLO(AfterAllOp, V1)
-MAP_STABLEHLO_TO_VHLO(AllGatherOp, V2)
+MAP_STABLEHLO_TO_VHLO(AllGatherOp, V1)
 MAP_STABLEHLO_TO_VHLO(AllReduceOp, V1)
-MAP_STABLEHLO_TO_VHLO(AllToAllOp, V2)
+MAP_STABLEHLO_TO_VHLO(AllToAllOp, V1)
 MAP_STABLEHLO_TO_VHLO(AndOp, V1)
 MAP_STABLEHLO_TO_VHLO(Atan2Op, V1)
 MAP_STABLEHLO_TO_VHLO(BatchNormGradOp, V1)
@@ -67,9 +68,11 @@ MAP_STABLEHLO_TO_VHLO(CeilOp, V1)
 MAP_STABLEHLO_TO_VHLO(CholeskyOp, V1)
 MAP_STABLEHLO_TO_VHLO(ClampOp, V1)
 MAP_STABLEHLO_TO_VHLO(ClzOp, V1)
-MAP_STABLEHLO_TO_VHLO(CollectivePermuteOp, V2)
+MAP_STABLEHLO_TO_VHLO(CollectiveBroadcastOp, V1)
+MAP_STABLEHLO_TO_VHLO(CollectivePermuteOp, V1)
 MAP_STABLEHLO_TO_VHLO(CompareOp, V1)
 MAP_STABLEHLO_TO_VHLO(ComplexOp, V1)
+MAP_STABLEHLO_TO_VHLO(CompositeOp, V1)
 MAP_STABLEHLO_TO_VHLO(ComputeReshapeShapeOp, V1)
 MAP_STABLEHLO_TO_VHLO(ConcatenateOp, V1)
 MAP_STABLEHLO_TO_VHLO(ConstantOp, V1)
@@ -79,7 +82,7 @@ MAP_STABLEHLO_TO_VHLO(CosineOp, V1)
 MAP_STABLEHLO_TO_VHLO(CreateTokenOp, V1)
 MAP_STABLEHLO_TO_VHLO(CrossReplicaSumOp, V1)
 MAP_STABLEHLO_TO_VHLO(CstrReshapableOp, V1)
-MAP_STABLEHLO_TO_VHLO(CustomCallOp, V2)
+MAP_STABLEHLO_TO_VHLO(CustomCallOp, V1)
 MAP_STABLEHLO_TO_VHLO(DivOp, V1)
 MAP_STABLEHLO_TO_VHLO(DotGeneralOp, V1)
 MAP_STABLEHLO_TO_VHLO(DotOp, V1)
@@ -165,6 +168,29 @@ MAP_STABLEHLO_TO_VHLO(XorOp, V1)
 
 #undef MAP_STABLEHLO_TO_VHLO
 #undef MAP_STABLEHLO_TO_VHLO_V0
+
+// Nonstandard mappings
+#define MAP_UPSTREAM_TO_VHLO(UpstreamOpName, VhloOpName, OpVer) \
+  template <>                                                   \
+  struct StablehloToVhloOpImpl<UpstreamOpName> {                \
+    using Type = VhloOpName##OpVer;                             \
+  };                                                            \
+  template <>                                                   \
+  struct VhloToStablehloOpImpl<VhloOpName##OpVer> {             \
+    using Type = UpstreamOpName;                                \
+  };
+
+MAP_UPSTREAM_TO_VHLO(func::FuncOp, vhlo::FuncOp, V1)
+MAP_UPSTREAM_TO_VHLO(func::CallOp, vhlo::CallOp, V1)
+
+// Slight ambiguity between stablehlo::ReturnOp and func::ReturnOp
+// Only map in one direction for func.return --> vhlo.return
+template <>
+struct StablehloToVhloOpImpl<func::ReturnOp> {
+  using Type = vhlo::ReturnOpV1;
+};
+
+#undef MAP_UPSTREAM_TO_VHLO
 
 }  // namespace stablehlo
 }  // namespace mlir

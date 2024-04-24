@@ -44,15 +44,24 @@ bool isSupportedIntegerType(Type type) {
 }
 
 bool isSupportedFloatType(Type type) {
-  return type.isF16() || type.isBF16() || type.isF32() || type.isF64();
+  return type.isFloat8E4M3B11FNUZ() || type.isFloat8E4M3FN() ||
+         type.isFloat8E4M3FNUZ() || type.isFloat8E5M2() ||
+         type.isFloat8E5M2FNUZ() || type.isF16() || type.isBF16() ||
+         type.isF32() || type.isF64();
 }
 
 bool isSupportedComplexType(Type type) {
-  auto complexTy = type.dyn_cast<ComplexType>();
+  auto complexTy = dyn_cast<ComplexType>(type);
   if (!complexTy) return false;
 
   auto complexElemTy = complexTy.getElementType();
   return complexElemTy.isF32() || complexElemTy.isF64();
+}
+
+int64_t numBits(Type type) {
+  if (isSupportedComplexType(type))
+    return numBits(cast<ComplexType>(type).getElementType()) * 2;
+  return type.getIntOrFloatBitWidth();
 }
 
 }  // namespace stablehlo

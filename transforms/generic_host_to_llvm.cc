@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ limitations under the License.
 #include "mlir/Conversion/ComplexToLLVM/ComplexToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
+#include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/MathToLibm/MathToLibm.h"
@@ -29,11 +30,25 @@ limitations under the License.
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"  // IWYU pragma: keep
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
-#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"      // IWYU pragma: keep
+#include "mlir/Dialect/MemRef/IR/MemRef.h"  // IWYU pragma: keep
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/MemRef/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"  // IWYU pragma: keep
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
+#include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
+#include "mlir/Dialect/X86Vector/Transforms.h"
+#include "mlir/Dialect/X86Vector/X86VectorDialect.h"  // IWYU pragma: keep
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "transforms/passes.h"
 
 namespace mlir {
@@ -45,19 +60,36 @@ namespace {
 
 class GenericHostToLLVMPass
     : public impl::GenericHostToLLVMPassBase<GenericHostToLLVMPass> {
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<LLVM::LLVMDialect>();
-  }
-
  public:
-  explicit GenericHostToLLVMPass() = default;
+  using GenericHostToLLVMPassBase::GenericHostToLLVMPassBase;
 
   void runOnOperation() override {
     ModuleOp m = getOperation();
 
     // Populate type conversions.
-    MLIRContext *ctx = m.getContext();
+    MLIRContext* ctx = m.getContext();
     LLVMTypeConverter typeConverter(ctx);
+
+    {
+      // Perform progressive lowering of vector operations on slices and all
+      // vector contraction operations. Also applies folding and DCE.
+
+      RewritePatternSet patterns(&getContext());
+      vector::populateVectorToVectorCanonicalizationPatterns(patterns);
+      vector::populateVectorBroadcastLoweringPatterns(patterns);
+      vector::populateVectorContractLoweringPatterns(
+          patterns, vector::VectorTransformsOptions());
+      vector::populateVectorMaskOpLoweringPatterns(patterns);
+      vector::populateVectorShapeCastLoweringPatterns(patterns);
+      vector::populateVectorTransposeLoweringPatterns(
+          patterns, vector::VectorTransformsOptions());
+      // Vector transfer ops with rank > 1 should be lowered with VectorToSCF.
+      vector::populateVectorTransferLoweringPatterns(patterns,
+                                                     /*maxTransferRank=*/1);
+      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    }
+
+    LLVMConversionTarget target(*ctx);
 
     // Populate patterns.
     RewritePatternSet patterns(&getContext());
@@ -67,20 +99,26 @@ class GenericHostToLLVMPass
     memref::populateExpandStridedMetadataPatterns(patterns);
     arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
     populateFinalizeMemRefToLLVMConversionPatterns(typeConverter, patterns);
-    populateMathToLLVMConversionPatterns(typeConverter, patterns);
+    populateMathToLLVMConversionPatterns(typeConverter, patterns, false);
     populateFuncToLLVMConversionPatterns(typeConverter, patterns);
     cf::populateControlFlowToLLVMConversionPatterns(typeConverter, patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
     populateComplexToLLVMConversionPatterns(typeConverter, patterns);
-    populateVectorToLLVMConversionPatterns(typeConverter, patterns);
-    // MathToLibm patterns are a last resort, so they have a 0 benefit (except
-    // for log1p, which has accuracy issues near 0 if implemented naively).
-    populateMathToLibmConversionPatterns(patterns, 0,
-                                         /*log1pBenefit=*/{2});
+    populateMathToLibmConversionPatterns(patterns);
 
-    //  Set target.
-    ConversionTarget target(*ctx);
-    target.addLegalDialect<LLVM::LLVMDialect>();
+    // Vector patterns.
+    vector::populateVectorMaskMaterializationPatterns(patterns, true);
+    vector::populateVectorTransferLoweringPatterns(patterns);
+    populateVectorToLLVMMatrixConversionPatterns(typeConverter, patterns);
+    populateVectorToLLVMConversionPatterns(typeConverter, patterns);
+    if (enableAvx2) {
+      configureX86VectorLegalizeForExportTarget(target);
+      populateX86VectorLegalizeForLLVMExportPatterns(typeConverter, patterns);
+    }
+
+    //  Setup target.
+    target.addLegalDialect<LLVM::LLVMDialect, gpu::GPUDialect,
+                           NVVM::NVVMDialect>();
     target.addIllegalDialect<arith::ArithDialect, func::FuncDialect,
                              complex::ComplexDialect, math::MathDialect>();
     // Mark modules as legal.
@@ -98,8 +136,9 @@ class GenericHostToLLVMPass
 
 namespace hlo {
 
-std::unique_ptr<OperationPass<ModuleOp> > createGenericHostToLLVMPass() {
-  return std::make_unique<GenericHostToLLVMPass>();
+std::unique_ptr<OperationPass<ModuleOp>> createGenericHostToLLVMPass(
+    const GenericHostToLLVMPassOptions& options) {
+  return std::make_unique<GenericHostToLLVMPass>(options);
 }
 
 }  // namespace hlo

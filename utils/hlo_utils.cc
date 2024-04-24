@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,19 +15,28 @@ limitations under the License.
 
 #include "utils/hlo_utils.h"
 
+#include <algorithm>
+#include <cassert>
 #include <numeric>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Value.h"
+#include "mlir/Support/LLVM.h"
 
 namespace mlir {
 namespace hlo {
 
 static constexpr size_t kPaddingSize = 64;
 
-DenseIntElementsAttr getBroadcastDimensionsAttr(Builder* b, Value x, Value y,
-                                                bool allowEmpty) {
+DenseI64ArrayAttr getBroadcastDimensionsAttr(Builder* b, Value x, Value y,
+                                             bool allowEmpty) {
   TensorType xType = x.getType().dyn_cast<RankedTensorType>();
   TensorType yType = y.getType().dyn_cast<RankedTensorType>();
   if (!xType || !yType) return {};
@@ -53,9 +62,7 @@ DenseIntElementsAttr getBroadcastDimensionsAttr(Builder* b, Value x, Value y,
   std::iota(broadcastDimensions.begin(), broadcastDimensions.end(),
             maxRank - minRank);
 
-  RankedTensorType type =
-      RankedTensorType::get({minRank}, b->getIntegerType(64));
-  return DenseIntElementsAttr::get(type, broadcastDimensions);
+  return b->getDenseI64ArrayAttr(broadcastDimensions);
 }
 
 DenseElementsAttr getScalarOfType(Type ty, int64_t rawValue) {
@@ -162,7 +169,7 @@ DenseElementsAttr getScalarLimitOfType(Type ty, ScalarLimit limit) {
 
 std::string lmhloToMhloOpName(llvm::StringRef opName,
                               mlir::MLIRContext* context) {
-  assert(opName.startswith("lmhlo.") && "Expected an LMHLO op");
+  assert(opName.starts_with("lmhlo.") && "Expected an LMHLO op");
 
   if (opName == "lmhlo.dot") {
     return "mhlo.dot_general";
@@ -196,7 +203,8 @@ std::pair<size_t, size_t> computeMemory(const std::vector<Value>& allocs) {
   size_t allocCounter = 0;
   for (const Value alloc : allocs) {
     auto shape = alloc.getType().cast<ShapedType>();
-    size_t shapeBytes = llvm::divideCeil(shape.getSizeInBits(), 8);
+    size_t shapeBytes = llvm::divideCeil(
+        shape.getNumElements() * shape.getElementTypeBitWidth(), 8);
     size_t alignFactor = llvm::divideCeil(shapeBytes, kPaddingSize);
     size_t size = alignFactor * kPaddingSize;
     totalSize += size;

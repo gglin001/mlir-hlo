@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2021 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ limitations under the License.
 // This file contains the patterns to convert arith.index_cast on tensors to
 // tensor ops and index_cast on scalars.
 
+#include <memory>
 #include <utility>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

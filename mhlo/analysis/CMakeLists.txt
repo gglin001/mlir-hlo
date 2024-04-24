@@ -9,16 +9,3 @@ add_mlir_library(MhloAnalysis
   MLIRIR
   LmhloDialect
 )
-
-add_mlir_library(MhloTestAnalysis
-  test_shape_component_analysis.cc
-
-  LINK_COMPONENTS
-  Core
-
-  LINK_LIBS PUBLIC
-  MLIRHLOAnalysis
-  MLIRAnalysis
-  MLIRPass
-  MLIRTransforms
-)
