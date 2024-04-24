@@ -2,3 +2,7 @@ build
 llvm-project
 llvm-build
 bazel-*
+
+build_cmake
+.vscode
+CMakeUserPresets.json
