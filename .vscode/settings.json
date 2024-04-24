@@ -12,4 +12,10 @@
     "--pch-storage=memory",
     "--compile-commands-dir=${workspaceFolder}/build_cmake"
   ],
+  "search.exclude": {
+    "**/build_cmake": true,
+  },
+  "files.watcherExclude": {
+    "**/build_cmake": true,
+  },
 }
