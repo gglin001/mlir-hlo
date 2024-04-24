@@ -1,0 +1,15 @@
+{
+  "terminal.integrated.env.linux": {
+    "EXT_PATH": "${workspaceFolder}/build_cmake/bin",
+  },
+  "terminal.integrated.env.osx": {
+    "EXT_PATH": "${workspaceFolder}/build_cmake/bin",
+  },
+  "clangd.arguments": [
+    "--background-index",
+    "--enable-config",
+    "--all-scopes-completion",
+    "--pch-storage=memory",
+    "--compile-commands-dir=${workspaceFolder}/build_cmake"
+  ],
+}
